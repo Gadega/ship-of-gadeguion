@@ -756,6 +756,27 @@ static void Ps3RawTestDraw(rsxVertexProgram* prog, void* code, const float pos[3
     }
 }
 
+/* Self-test: a copy of a compiled vertex program with instructions a and b swapped and the
+ * END flag (bit 0 of an instruction's 4th word) moved to the new last instruction. */
+static rsxVertexProgram* Ps3SwappedProgram(uint8_t* buffer, size_t capacity, const unsigned char* blob, size_t size,
+                                           uint32_t a, uint32_t b, void** code) {
+    rsxVertexProgram* prog;
+    uint32_t* insn;
+    uint32_t tmp[4], bytes, i;
+    if (size > capacity) return NULL;
+    memcpy(buffer, blob, size);
+    prog = (rsxVertexProgram*)buffer;
+    rsxVertexProgramGetUCode(prog, code, &bytes);
+    insn = (uint32_t*)*code;
+    if (a >= prog->num_insn || b >= prog->num_insn) return NULL;
+    memcpy(tmp, insn + a * 4, sizeof(tmp));
+    memcpy(insn + a * 4, insn + b * 4, sizeof(tmp));
+    memcpy(insn + b * 4, tmp, sizeof(tmp));
+    for (i = 0; i < prog->num_insn; ++i) insn[i * 4 + 3] &= ~1U;
+    insn[(prog->num_insn - 1U) * 4 + 3] |= 1U;
+    return prog;
+}
+
 static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
     /* Clip-space triangle for the pass-through program; raw coordinates for the probes
      * (they divide by 2048). */
@@ -763,21 +784,46 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
     static const float kRaw[3][4] = { { -1024.0f, -1024.0f, 0.0f, 40.0f }, { 1024.0f, -1024.0f, 0.0f, 40.0f },
                                       { 0.0f, 1024.0f, 0.0f, 40.0f } };
     static const char* const kNames[8] = {
-        "CPU path (control)", "pass-through program, index list", "pass-through program, vertex array",
-        "T1 colour from a built-in constant", "T2 colour from an uploaded constant",
-        "T3 position x uploaded constant 1.0", "T4 position written in two halves", "attr probe (reference)",
+        "CPU path (control)", "pass-through program", "T1 (constant read in the middle)",
+        "T1 with the constant read moved last", "attr probe (ends with a constant read)",
+        "attr probe with the input read moved last", "T&L program as compiled (constants palette)",
+        "T&L program, texcoord6 constant move moved to the front",
     };
+    static uint8_t sSwapT1[1024] __attribute__((aligned(64)));
+    static uint8_t sSwapProbe[1024] __attribute__((aligned(64)));
+    static uint8_t sSwapTnl[8192] __attribute__((aligned(64)));
+    static float sConsts[64 * 4];
     static const float kOne[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-    rsxVertexProgram* tp[4];
-    void* tc[4];
+    rsxVertexProgram* t1 = (rsxVertexProgram*)oot_ps3_rsx_vpo_selftest1;
+    rsxVertexProgram* t1Swap;
+    rsxVertexProgram* probeSwap;
+    rsxVertexProgram* tnlSwap;
+    void* t1Code;
+    void* t1SwapCode = NULL;
+    void* probeSwapCode = NULL;
+    void* tnlSwapCode = NULL;
     uint32_t bytes, results[8];
     char line[200];
     int v, used;
-    tp[0] = (rsxVertexProgram*)oot_ps3_rsx_vpo_selftest1;
-    tp[1] = (rsxVertexProgram*)oot_ps3_rsx_vpo_selftest2;
-    tp[2] = (rsxVertexProgram*)oot_ps3_rsx_vpo_selftest3;
-    tp[3] = (rsxVertexProgram*)oot_ps3_rsx_vpo_selftest4;
-    for (v = 0; v < 4; ++v) rsxVertexProgramGetUCode(tp[v], &tc[v], &bytes);
+    (void)kOne;
+    rsxVertexProgramGetUCode(t1, &t1Code, &bytes);
+    /* T1: instruction 6 = MOV texcoord5, c[0]; 10 = MOV color.secondary, input (last). */
+    t1Swap = Ps3SwappedProgram(sSwapT1, sizeof(sSwapT1), oot_ps3_rsx_vpo_selftest1, sizeof(oot_ps3_rsx_vpo_selftest1),
+                               6, 10, &t1SwapCode);
+    /* attr probe: 7 = MUL position.xy, input, c[0]; 8 = MOV position.zw, c[0] (last). */
+    probeSwap = Ps3SwappedProgram(sSwapProbe, sizeof(sSwapProbe), oot_ps3_rsx_vpo_tnl_attrprobe,
+                                  sizeof(oot_ps3_rsx_vpo_tnl_attrprobe), 7, 8, &probeSwapCode);
+    /* T&L: the last instruction (MOV texcoord6, c[29]) has no inputs or dependants: swap it with
+     * the first, which then ends the program (instruction 0 reads the vertex colour). */
+    tnlSwap = Ps3SwappedProgram(sSwapTnl, sizeof(sSwapTnl), oot_ps3_rsx_vpo_tnl, sizeof(oot_ps3_rsx_vpo_tnl), 0,
+                                ((const rsxVertexProgram*)oot_ps3_rsx_vpo_tnl)->num_insn - 1U, &tnlSwapCode);
+    /* T&L constants: clip = (x/2048, y/2048, 0.5, 1), no lighting/fog, k4 = white. */
+    memset(sConsts, 0, sizeof(sConsts));
+    sConsts[24 * 4 + 0] = sConsts[24 * 4 + 1] = sConsts[24 * 4 + 2] = sConsts[24 * 4 + 3] = 1.0f;
+    sConsts[40 * 4 + 0] = 1.0f / 2048.0f;
+    sConsts[41 * 4 + 1] = 1.0f / 2048.0f;
+    sConsts[43 * 4 + 2] = 0.5f;
+    sConsts[43 * 4 + 3] = 1.0f;
     for (v = 0; v < 8; ++v) {
         Ps3SelfTestClear();
         rsxSetDepthTestEnable(ctx, GCM_FALSE);
@@ -788,7 +834,6 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
         sDepthTest = sDepthWrite = sZmodeDecal = 0;
         switch (v) {
             case 0: {
-                /* The real CPU path: x, y, z, w, u, v; combiner D = TEXEL0 of the white texture. */
                 const float texel0 = 8.0f * 4096.0f;
                 const float packs[4] = { texel0, texel0, texel0, texel0 };
                 const float vbo[3][6] = { { -0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f },
@@ -800,12 +845,36 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
                 oot_ps3_rsx_triangles(&vbo[0][0], 6U, 1U, 0U, 0U, 0, 0U, 0);
             } break;
             case 1: Ps3RawTestDraw(vp, vpCode, kClip, 1, 1, NULL); break;
-            case 2: Ps3RawTestDraw(vp, vpCode, kClip, 1, 0, NULL); break;
-            case 3: Ps3RawTestDraw(tp[0], tc[0], kClip, 1, 1, NULL); break;
-            case 4: Ps3RawTestDraw(tp[1], tc[1], kClip, 1, 1, kOne); break;
-            case 5: Ps3RawTestDraw(tp[2], tc[2], kClip, 1, 1, kOne); break;
-            case 6: Ps3RawTestDraw(tp[3], tc[3], kClip, 1, 1, NULL); break;
-            default: Ps3RawTestDraw(vpTnlAttrProbe, vpTnlAttrProbeCode, kRaw, 1, 1, NULL); break;
+            case 2: Ps3RawTestDraw(t1, t1Code, kClip, 1, 1, NULL); break;
+            case 3: if (t1Swap) Ps3RawTestDraw(t1Swap, t1SwapCode, kClip, 1, 1, NULL); break;
+            case 4: Ps3RawTestDraw(vpTnlAttrProbe, vpTnlAttrProbeCode, kRaw, 1, 1, NULL); break;
+            case 5: if (probeSwap) Ps3RawTestDraw(probeSwap, probeSwapCode, kRaw, 1, 1, NULL); break;
+            case 6:
+            case 7: {
+                /* The real T&L draw path with its packed records. */
+                static const int16_t kTri[3][2] = { { -1024, -1024 }, { 1024, -1024 }, { 0, 1024 } };
+                uint8_t records[3 * 16];
+                int i;
+                for (i = 0; i < 3; ++i) {
+                    uint8_t* r = records + i * 16;
+                    const int16_t ob[3] = { kTri[i][0], kTri[i][1], 0 };
+                    const uint16_t slot = 40, tcz[2] = { 0, 0 };
+                    memcpy(r, ob, 6);
+                    memcpy(r + 6, &slot, 2);
+                    memcpy(r + 8, tcz, 4);
+                    r[12] = r[13] = r[14] = r[15] = 255;
+                }
+                if (v == 7 && tnlSwap) {
+                    vpTnlMain = tnlSwap;
+                    vpTnlMainCode = tnlSwapCode;
+                }
+                sTnlDebugMode = 1;
+                sCurrentVp = -1;
+                oot_ps3_rsx_tnl_draw(records, 3U, sConsts, 1, 40U, 55U, 0U, 0U, 0, 0, 0, 0);
+                vpTnlMain = (rsxVertexProgram*)oot_ps3_rsx_vpo_tnl;
+                rsxVertexProgramGetUCode(vpTnlMain, &vpTnlMainCode, &bytes);
+            } break;
+            default: break;
         }
         results[v] = Ps3SelfTestPixel(width, height);
         tnlCursor = 0;
