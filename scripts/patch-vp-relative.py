@@ -65,6 +65,21 @@ def main(vpo_path, dump_path):
         d0, d1, d2, d3 = struct.unpack_from(">4I", data, at)
         d1 = (d1 & ~(0x3FF << 12)) | (offset << 12)  # const_src
         d3 |= 1 << 1                                   # index_const
+        # cgcomp also leaves the constant operand's register type at 0 (invalid) instead of
+        # 3 (constant). Source register type = low 2 bits of each 17-bit source field:
+        # src0 at D2 bit 23, src1 at D2 bit 6, src2 at D3 bit 21.
+        fixed = 0
+        for word, bit in ((2, 23), (2, 6), (3, 21)):
+            value = d2 if word == 2 else d3
+            if (value >> bit) & 3 == 0:
+                value |= 3 << bit
+                fixed += 1
+            if word == 2:
+                d2 = value
+            else:
+                d3 = value
+        if fixed != len(re.findall(r"c\[A0\.", line)):
+            sys.exit("patch-vp-relative: %s: %d type-0 sources for %s" % (vpo_path, fixed, line))
         struct.pack_into(">4I", data, at, d0, d1, d2, d3)
         patched += 1
     open(vpo_path, "wb").write(bytes(data))
