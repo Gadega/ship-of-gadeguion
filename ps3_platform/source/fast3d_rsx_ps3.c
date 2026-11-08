@@ -694,32 +694,82 @@ static void Ps3SelfTestClear(void) {
     rsxSetClearDepthStencil(ctx, 0xffffff00);
     rsxClearSurface(ctx, GCM_CLEAR_R | GCM_CLEAR_G | GCM_CLEAR_B | GCM_CLEAR_A | GCM_CLEAR_Z);
 }
-static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
-    static float sConsts[64 * 4];
-    /* Packed T&L records: ob s16 x3, palette constant index (40), tc s16 x2, rgba u8. */
-    static const int16_t kTri[3][2] = { { -1024, -1024 }, { 1024, -1024 }, { 0, 1024 } };
-    uint8_t records[3 * 16];
-    uint32_t results[6];
-    char line[160];
-    int v, i, used = 0;
+/* Raw test draw: three float vertices (44 floats each, the CPU path's layout) drawn with
+ * vertex program `prog`. fullBinding: all 11 inputs like the CPU path, else only POS,
+ * TEX0 (2 floats) and COLOR0 like the GPU path (the rest switched off with size 0).
+ * indexDraw: rsxDrawIndexArray (CPU path) or rsxDrawVertexArray (GPU path). */
+static void Ps3RawTestDraw(rsxVertexProgram* prog, void* code, const float pos[3][4], int fullBinding,
+                           int indexDraw) {
+    GpuTexture* white = &textures[MAX_TEXTURES - 1];
+    float* dst = vertices[frameIndex];
+    uint32_t offset, i, a;
+    float vtx[VERTEX_FLOATS];
     for (i = 0; i < 3; ++i) {
-        uint8_t* r = records + i * 16;
-        const int16_t ob[3] = { kTri[i][0], kTri[i][1], 0 };
-        const uint16_t slot = 40, tc[2] = { 0, 0 };
-        memcpy(r, ob, 6);
-        memcpy(r + 6, &slot, 2);
-        memcpy(r + 8, tc, 4);
-        r[12] = r[13] = r[14] = r[15] = 255;
+        memset(vtx, 0, sizeof(vtx));
+        memcpy(vtx, pos[i], 4 * sizeof(float));
+        vtx[24] = vtx[25] = vtx[26] = vtx[27] = 1.0f; /* TEXCOORD5 = k4 = white */
+        vtx[32] = vtx[33] = vtx[34] = vtx[35] = 1.0f; /* COLOR0 */
+        vtx[36] = vtx[37] = vtx[38] = vtx[39] = 1.0f; /* COLOR1 */
+        memcpy(dst + i * VERTEX_FLOATS, vtx, sizeof(vtx));
     }
-    /* Constants for the T&L program: clip = (x/2048, y/2048, 0.5, 1), no lighting/fog,
-     * combiner k4 = white (k0..k3 = 0). */
-    memset(sConsts, 0, sizeof(sConsts));
-    sConsts[24 * 4 + 0] = sConsts[24 * 4 + 1] = sConsts[24 * 4 + 2] = sConsts[24 * 4 + 3] = 1.0f;
-    sConsts[40 * 4 + 0] = 1.0f / 2048.0f;  /* R0 */
-    sConsts[41 * 4 + 1] = 1.0f / 2048.0f;  /* R1 */
-    sConsts[43 * 4 + 2] = 0.5f;            /* R3 = (0, 0, 0.5, 1) */
-    sConsts[43 * 4 + 3] = 1.0f;
-    for (v = 0; v < 6; ++v) {
+    rsxLoadVertexProgram(ctx, prog, code);
+    rsxLoadFragmentProgramLocation(ctx, fpGeneric, fpGenericOffset, GCM_LOCATION_RSX);
+    for (i = 0; i < 2; ++i) {
+        rsxTextureControl(ctx, i, GCM_TRUE, 0, 0, GCM_TEXTURE_MAX_ANISO_1);
+        rsxLoadTexture(ctx, i, &white->image);
+        rsxTextureWrapMode(ctx, i, GCM_TEXTURE_CLAMP_TO_EDGE, GCM_TEXTURE_CLAMP_TO_EDGE, GCM_TEXTURE_CLAMP_TO_EDGE, 0,
+                           GCM_TEXTURE_ZFUNC_LESS, 0);
+        rsxTextureFilter(ctx, i, 0, GCM_TEXTURE_NEAREST, GCM_TEXTURE_NEAREST, GCM_TEXTURE_CONVOLUTION_QUINCUNX);
+    }
+    rsxSetBlendEnable(ctx, GCM_FALSE);
+    rsxAddressToOffset(dst, &offset);
+    if (fullBinding) {
+        static const uint8_t kAttr[11] = { GCM_VERTEX_ATTRIB_POS, GCM_VERTEX_ATTRIB_TEX0, GCM_VERTEX_ATTRIB_TEX1,
+                                           GCM_VERTEX_ATTRIB_TEX2, GCM_VERTEX_ATTRIB_TEX3, GCM_VERTEX_ATTRIB_TEX4,
+                                           GCM_VERTEX_ATTRIB_TEX5, GCM_VERTEX_ATTRIB_TEX6, GCM_VERTEX_ATTRIB_COLOR0,
+                                           GCM_VERTEX_ATTRIB_COLOR1, GCM_VERTEX_ATTRIB_TEX7 };
+        for (a = 0; a < 11; ++a)
+            rsxBindVertexArrayAttrib(ctx, kAttr[a], 0, offset + a * 4 * sizeof(float), VERTEX_FLOATS * sizeof(float), 4,
+                                     GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    } else {
+        static const uint8_t kOff[8] = { GCM_VERTEX_ATTRIB_COLOR1, GCM_VERTEX_ATTRIB_TEX1, GCM_VERTEX_ATTRIB_TEX2,
+                                         GCM_VERTEX_ATTRIB_TEX3, GCM_VERTEX_ATTRIB_TEX4, GCM_VERTEX_ATTRIB_TEX5,
+                                         GCM_VERTEX_ATTRIB_TEX6, GCM_VERTEX_ATTRIB_TEX7 };
+        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0, offset, VERTEX_FLOATS * sizeof(float), 4,
+                                 GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0, offset + 4 * sizeof(float),
+                                 VERTEX_FLOATS * sizeof(float), 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, offset + 32 * sizeof(float),
+                                 VERTEX_FLOATS * sizeof(float), 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+        for (a = 0; a < 8; ++a)
+            rsxBindVertexArrayAttrib(ctx, kOff[a], 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    }
+    if (indexDraw) {
+        rsxDrawIndexArray(ctx, GCM_TYPE_TRIANGLES, indexOffset, 3, GCM_INDEX_TYPE_16B, GCM_LOCATION_RSX);
+    } else {
+        rsxDrawVertexArray(ctx, GCM_TYPE_TRIANGLES, 0, 3);
+    }
+}
+
+static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
+    /* Clip-space triangle for the pass-through program; raw coordinates for the probes
+     * (they divide by 2048). */
+    static const float kClip[3][4] = { { -0.5f, -0.5f, 0.5f, 1.0f }, { 0.5f, -0.5f, 0.5f, 1.0f }, { 0.0f, 0.5f, 0.5f, 1.0f } };
+    static const float kRaw[3][4] = { { -1024.0f, -1024.0f, 0.0f, 40.0f }, { 1024.0f, -1024.0f, 0.0f, 40.0f },
+                                      { 0.0f, 1024.0f, 0.0f, 40.0f } };
+    static const char* const kNames[7] = {
+        "CPU path (control)", "pass-through program, full binding, index list",
+        "pass-through program, full binding, vertex array", "attr probe, full binding, index list",
+        "attr probe 2 (all outputs), full binding, index list", "attr probe 2 (all outputs), GPU-path binding, vertex array",
+        "attr probe, GPU-path binding, vertex array (old variant)",
+    };
+    rsxVertexProgram* probe2 = (rsxVertexProgram*)oot_ps3_rsx_vpo_tnl_attrprobe2;
+    void* probe2Code;
+    uint32_t bytes, results[7];
+    char line[200];
+    int v, used;
+    rsxVertexProgramGetUCode(probe2, &probe2Code, &bytes);
+    for (v = 0; v < 7; ++v) {
         Ps3SelfTestClear();
         rsxSetDepthTestEnable(ctx, GCM_FALSE);
         rsxSetDepthWriteEnable(ctx, GCM_FALSE);
@@ -727,20 +777,25 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
         sCullEnabled = 0;
         rsxSetColorMask(ctx, GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A);
         sDepthTest = sDepthWrite = sZmodeDecal = 0;
-        if (v == 0) {
-            /* CPU path: x, y, z, w, u, v; combiner D = TEXEL0 of the white fallback texture. */
-            const float texel0 = 8.0f * 4096.0f;
-            const float packs[4] = { texel0, texel0, texel0, texel0 };
-            const float vbo[3][6] = { { -0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f },
-                                      { 0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f },
-                                      { 0.0f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f } };
-            oot_ps3_rsx_set_draw_state(4U, 0xFFFFU, 0xFFFFU, 6U, 4U, 0.0f, packs);
-            oot_ps3_rsx_triangles(&vbo[0][0], 6U, 1U, 0U, 0U, 0, 0U, 0);
-        } else {
-            sTnlDebugMode = (v == 1 || v == 2 || v == 3) ? 4 : 1;
-            sTnlIndexDraw = v == 3;
-            oot_ps3_rsx_tnl_draw(records, 3U, sConsts, 1, 40U, 55U, 0U, 0U, 0, 0, 0, (v == 1 || v == 4) ? 1 : 0);
-            sTnlIndexDraw = 0;
+        switch (v) {
+            case 0: {
+                /* The real CPU path: x, y, z, w, u, v; combiner D = TEXEL0 of the white texture. */
+                const float texel0 = 8.0f * 4096.0f;
+                const float packs[4] = { texel0, texel0, texel0, texel0 };
+                const float vbo[3][6] = { { -0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f },
+                                          { 0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f },
+                                          { 0.0f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f } };
+                sCurrentVp = -1;
+                sCurrentFp = -1;
+                oot_ps3_rsx_set_draw_state(4U, 0xFFFFU, 0xFFFFU, 6U, 4U, 0.0f, packs);
+                oot_ps3_rsx_triangles(&vbo[0][0], 6U, 1U, 0U, 0U, 0, 0U, 0);
+            } break;
+            case 1: Ps3RawTestDraw(vp, vpCode, kClip, 1, 1); break;
+            case 2: Ps3RawTestDraw(vp, vpCode, kClip, 1, 0); break;
+            case 3: Ps3RawTestDraw(vpTnlAttrProbe, vpTnlAttrProbeCode, kRaw, 1, 1); break;
+            case 4: Ps3RawTestDraw(probe2, probe2Code, kRaw, 1, 1); break;
+            case 5: Ps3RawTestDraw(probe2, probe2Code, kRaw, 0, 0); break;
+            default: Ps3RawTestDraw(vpTnlAttrProbe, vpTnlAttrProbeCode, kRaw, 0, 0); break;
         }
         results[v] = Ps3SelfTestPixel(width, height);
         tnlCursor = 0;
@@ -750,15 +805,13 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
     sCurrentVp = -1;
     sCurrentFp = -1;
     used = snprintf(sSelfTestSummary, sizeof(sSelfTestSummary), "GPU self-test:");
-    for (v = 0; v < 6; ++v) {
+    for (v = 0; v < 7; ++v) {
         const int pass = results[v] != 0xDEADBEEFU && (results[v] & 0xFF) > 0x80 && ((results[v] >> 8) & 0xFF) > 0x80 &&
                          ((results[v] >> 16) & 0xFF) > 0x80;
         if (used < (int)sizeof(sSelfTestSummary) - 3)
             used += snprintf(sSelfTestSummary + used, sizeof(sSelfTestSummary) - (size_t)used, " %d%s", v, pass ? "ok" : "X");
-        snprintf(line, sizeof(line), "graph: Play rsx-selftest %d %s: centre pixel %06x -> %s", v,
-                 v == 0 ? "CPU path (control)" : v == 1 ? "attr probe, float records" : v == 2 ? "attr probe, packed records"
-                 : v == 3 ? "attr probe, packed records, index list" : v == 4 ? "T&L program, float records"
-                 : "T&L program, packed records", (unsigned)results[v], pass ? "PASS" : "FAIL");
+        snprintf(line, sizeof(line), "graph: Play rsx-selftest %d %s: centre pixel %06x -> %s", v, kNames[v],
+                 (unsigned)results[v], pass ? "PASS" : "FAIL");
         oot_ps3_early_trace(line);
     }
     oot_ps3_early_trace(sSelfTestSummary);
