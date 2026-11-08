@@ -21,20 +21,23 @@ extern "C" int oot_ps3_probe_scene_resource(const char* name, int spawn,
 extern "C" int oot_ps3_install_selected_room_mesh(PlayState* play);
 extern "C" s32 Object_Spawn(ObjectContext* objectCtx, s16 objectId);
 
+#include "shipwright_item_tables_ps3.inc"
+
 namespace {
 GameInteractor gVanillaInteractor;
 char gTimeText[] = "00:00:00";
 
+// ItemTableManager::RetrieveItemEntry(MOD_NONE, id) on PC: the vanilla table entry for
+// GetItemID `id` with drawItemId/drawModIndex set from it, GET_ITEM_NONE when out of range.
+// (A placeholder that copied `id` into every field made every chest give a Pocket Egg.)
 GetItemEntry VanillaItemEntry(int16_t id) {
-    GetItemEntry entry = {};
-    entry.itemId = static_cast<uint16_t>(id);
-    entry.gi = id;
-    entry.getItemId = id;
-    entry.gid = static_cast<uint16_t>(id);
-    entry.collectable = 1;
-    entry.getItemFrom = ITEM_FROM_NPC;
-    entry.getItemCategory = ITEM_CATEGORY_JUNK;
-    entry.drawItemId = static_cast<uint16_t>(id);
+    if (id < 1 || static_cast<size_t>(id) > sizeof(kPs3GetItemTable) / sizeof(kPs3GetItemTable[0])) {
+        const GetItemEntry none = GET_ITEM_NONE;
+        return none;
+    }
+    GetItemEntry entry = kPs3GetItemTable[id - 1];
+    entry.drawItemId = entry.itemId;
+    entry.drawModIndex = entry.modIndex;
     return entry;
 }
 } // namespace
@@ -303,7 +306,12 @@ GetItemEntry ItemTable_RetrieveEntry(s16 tableId, s16 id) {
     return VanillaItemEntry(id);
 }
 GetItemEntry GetItemMystery(void) { return VanillaItemEntry(0); }
-GetItemID RetrieveGetItemIDFromItemID(ItemID itemId) { return static_cast<GetItemID>(itemId); }
+GetItemID RetrieveGetItemIDFromItemID(ItemID itemId) {
+    for (const auto& pair : kPs3ItemIdToGetItemId) {
+        if (pair.itemId == itemId) return pair.getItemId;
+    }
+    return GI_MAX;
+}
 RandomizerGet RetrieveRandomizerGetFromItemID(ItemID) { return static_cast<RandomizerGet>(0); }
 
 Sprite* GetSeedTexture(uint8_t) { return nullptr; }

@@ -10,6 +10,20 @@ typedef enum {
     ITEM_TABLE_NONE = 0,
 } ItemTableType;
 
+// Item-table macros, unchanged from the upstream header (the PS3 vanilla item table
+// in ps3_platform/source/shipwright_item_tables_ps3.inc is built with them).
+#define CHEST_ANIM_SHORT (int16_t)0
+#define CHEST_ANIM_LONG (int16_t)1
+
+#define GET_ITEM(itemId, objectId, drawId, textId, field, chestAnim, itemCategory, modIndex, getItemId)                \
+    {                                                                                                                  \
+        itemId, field, (int16_t)((chestAnim != CHEST_ANIM_SHORT ? 1 : -1) * (drawId + 1)), textId, objectId, modIndex, \
+            modIndex, getItemId, drawId, true, ITEM_FROM_NPC, itemCategory, itemId, modIndex, NULL                     \
+    }
+
+#define GET_ITEM_NONE \
+    { ITEM_NONE, 0, 0, 0, 0, 0, 0, 0, 0, false, ITEM_FROM_NPC, ITEM_CATEGORY_JUNK, ITEM_NONE, 0, NULL }
+
 #ifndef PS3_COMPAT_GET_ITEM_ENTRY_DEFINED
 #define PS3_COMPAT_GET_ITEM_ENTRY_DEFINED
 
