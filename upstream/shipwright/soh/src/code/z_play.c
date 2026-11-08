@@ -433,6 +433,22 @@ static void Play_Ps3ProfileReport(void) {
                  gPs3ActorDrawUs[top[0]], (unsigned)top[1], gPs3ActorDrawUs[top[1]], (unsigned)top[2],
                  gPs3ActorDrawUs[top[2]], traceCount - sLastTraceCount);
         oot_ps3_early_trace(line);
+        {
+            extern void oot_ps3_fi_take_stats(unsigned long long* recordUs, unsigned long long* startUs,
+                                              unsigned long long* interpUs, unsigned int* recordCalls);
+            extern void oot_ps3_trace_top(char* out, unsigned int size);
+            unsigned long long fiRecord, fiStart, fiInterp;
+            unsigned int fiCalls;
+            char top[200];
+            oot_ps3_fi_take_stats(&fiRecord, &fiStart, &fiInterp, &fiCalls);
+            snprintf(line, sizeof(line),
+                     "graph: Play fiprof/64 record=%llu us (%u calls) newRecording=%llu us interpolate=%llu us",
+                     fiRecord, fiCalls, fiStart, fiInterp);
+            oot_ps3_early_trace(line);
+            oot_ps3_trace_top(top, sizeof(top));
+            snprintf(line, sizeof(line), "graph: Play tracetop/64 %s", top);
+            oot_ps3_early_trace(line);
+        }
         sLastTraceCount = oot_ps3_trace_count();
         memset(sPs3DrawProf, 0, sizeof(sPs3DrawProf));
         memset(gPs3ActorDrawUs, 0, sizeof(unsigned long long) * ACTOR_ID_MAX);

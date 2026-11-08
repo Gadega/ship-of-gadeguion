@@ -195,6 +195,36 @@ bool has_inv_actor_mtx;
 MtxF inv_actor_mtx;
 size_t inv_actor_mtx_path_index;
 
+#ifdef __PS3__
+// Profiling (debug drawprof line): time spent recording, starting a recording (which
+// frees the previous one) and interpolating, accumulated in microseconds.
+extern "C" unsigned long long oot_ps3_microseconds_now(void);
+static unsigned long long sPs3FiRecordUs, sPs3FiStartUs, sPs3FiInterpUs;
+static unsigned int sPs3FiRecordCalls;
+static int sPs3FiTimerDepth;
+struct Ps3FiRecordTimer {
+    unsigned long long t0;
+    Ps3FiRecordTimer() : t0(sPs3FiTimerDepth++ == 0 ? oot_ps3_microseconds_now() : 0) {
+        ++sPs3FiRecordCalls;
+    }
+    ~Ps3FiRecordTimer() {
+        if (--sPs3FiTimerDepth == 0) sPs3FiRecordUs += oot_ps3_microseconds_now() - t0;
+    }
+};
+#define PS3_FI_RECORD_TIMER Ps3FiRecordTimer ps3FiTimer
+extern "C" void oot_ps3_fi_take_stats(unsigned long long* recordUs, unsigned long long* startUs,
+                                      unsigned long long* interpUs, unsigned int* recordCalls) {
+    *recordUs = sPs3FiRecordUs;
+    *startUs = sPs3FiStartUs;
+    *interpUs = sPs3FiInterpUs;
+    *recordCalls = sPs3FiRecordCalls;
+    sPs3FiRecordUs = sPs3FiStartUs = sPs3FiInterpUs = 0;
+    sPs3FiRecordCalls = 0;
+}
+#else
+#define PS3_FI_RECORD_TIMER
+#endif
+
 Data& append(Op op) {
     auto& m = current_path.back()->ops[op];
     current_path.back()->items.emplace_back(op, m.size());
@@ -442,10 +472,16 @@ struct InterpolateCtx {
 } // anonymous namespace
 
 unordered_map<Mtx*, MtxF> FrameInterpolation_Interpolate(float step) {
+#ifdef __PS3__
+    const unsigned long long ps3T0 = oot_ps3_microseconds_now();
+#endif
     InterpolateCtx ctx;
     ctx.step = step;
     ctx.w = 1.0f - step;
     ctx.interpolate_branch(&previous_recording.root_path, &current_recording.root_path);
+#ifdef __PS3__
+    sPs3FiInterpUs += oot_ps3_microseconds_now() - ps3T0;
+#endif
     return ctx.mtx_replacements;
 }
 
@@ -457,11 +493,15 @@ void FrameInterpolation_StartRecord(void) {
 #ifdef __PS3__
     FrameInterpolation_Ps3Init();
     sPs3RecordedThisTick = 1;
+    const unsigned long long ps3T0 = oot_ps3_microseconds_now();
 #endif
     previous_recording = std::move(current_recording);
     current_recording = {};
     current_path.clear();
     current_path.push_back(&current_recording.root_path);
+#ifdef __PS3__
+    sPs3FiStartUs += oot_ps3_microseconds_now() - ps3T0;
+#endif
     if (OTRGlobals::Instance->GetInterpolationFPS() != 20) {
         is_recording = true;
     }
@@ -475,6 +515,7 @@ void FrameInterpolation_StopRecord(void) {
 void FrameInterpolation_RecordOpenChild(const void* a, int b) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     label key = { a, b };
     auto& m = current_path.back()->children[key];
     append(Op::OpenChild).open_child = { key, m.size() };
@@ -484,6 +525,7 @@ void FrameInterpolation_RecordOpenChild(const void* a, int b) {
 void FrameInterpolation_RecordCloseChild(void) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     // append(Op::CloseChild);
     if (has_inv_actor_mtx && current_path.size() == inv_actor_mtx_path_index) {
         has_inv_actor_mtx = false;
@@ -502,66 +544,77 @@ int FrameInterpolation_GetCameraEpoch(void) {
 void FrameInterpolation_RecordActorPosRotMatrix(void) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     next_is_actor_pos_rot_matrix = true;
 }
 
 void FrameInterpolation_RecordMatrixPush(void) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixPush);
 }
 
 void FrameInterpolation_RecordMatrixPop(void) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixPop);
 }
 
 void FrameInterpolation_RecordMatrixPut(MtxF* src) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixPut).matrix_put = { *src };
 }
 
 void FrameInterpolation_RecordMatrixMult(MtxF* mf, u8 mode) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixMult).matrix_mult = { *mf, mode };
 }
 
 void FrameInterpolation_RecordMatrixTranslate(f32 x, f32 y, f32 z, u8 mode) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixTranslate).matrix_translate = { x, y, z, mode };
 }
 
 void FrameInterpolation_RecordMatrixScale(f32 x, f32 y, f32 z, u8 mode) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixScale).matrix_scale = { x, y, z, mode };
 }
 
 void FrameInterpolation_RecordMatrixRotate1Coord(u32 coord, f32 value, u8 mode) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixRotate1Coord).matrix_rotate_1_coord = { coord, value, mode };
 }
 
 void FrameInterpolation_RecordMatrixRotateZYX(s16 x, s16 y, s16 z, u8 mode) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixRotateZYX).matrix_rotate_zyx = { x, y, z, mode };
 }
 
 void FrameInterpolation_RecordMatrixTranslateRotateZYX(Vec3f* translation, Vec3s* rotation) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixTranslateRotateZYX).matrix_translate_rotate_zyx = { *translation, *rotation };
 }
 
 void FrameInterpolation_RecordMatrixSetTranslateRotateYXZ(f32 translateX, f32 translateY, f32 translateZ, Vec3s* rot) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     auto& d = append(Op::MatrixSetTranslateRotateYXZ).matrix_set_translate_rotate_yxz = { translateX, translateY,
                                                                                           translateZ, *rot };
     if (next_is_actor_pos_rot_matrix) {
@@ -577,12 +630,14 @@ void FrameInterpolation_RecordMatrixSetTranslateRotateYXZ(f32 translateX, f32 tr
 void FrameInterpolation_RecordMatrixMtxFToMtx(MtxF* src, Mtx* dest) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixMtxFToMtx).matrix_mtxf_to_mtx = { *src, dest };
 }
 
 void FrameInterpolation_RecordMatrixToMtx(Mtx* dest, char* file, s32 line) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     auto& d = append(Op::MatrixToMtx).matrix_to_mtx = { dest };
     if (has_inv_actor_mtx) {
         d.has_adjusted = true;
@@ -595,18 +650,21 @@ void FrameInterpolation_RecordMatrixToMtx(Mtx* dest, char* file, s32 line) {
 void FrameInterpolation_RecordMatrixReplaceRotation(MtxF* mf) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixReplaceRotation).matrix_replace_rotation = { *mf };
 }
 
 void FrameInterpolation_RecordMatrixRotateAxis(f32 angle, Vec3f* axis, u8 mode) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     append(Op::MatrixRotateAxis).matrix_rotate_axis = { angle, *axis, mode };
 }
 
 void FrameInterpolation_RecordSkinMatrixMtxFToMtx(MtxF* src, Mtx* dest) {
     if (!is_recording)
         return;
+    PS3_FI_RECORD_TIMER;
     FrameInterpolation_RecordMatrixMtxFToMtx(src, dest);
 }
 

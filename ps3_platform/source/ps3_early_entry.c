@@ -285,6 +285,46 @@ const char* oot_ps3_last_trace(void) {
 /* Counts every tracer call (filtered or not). The stall watchdog treats new
  * trace calls as progress, so a slow scene load isn't mistaken for a hang. */
 static volatile unsigned int sPs3TraceCount;
+/* Which trace lines are called most (by message address; z_play.c reports the top 3
+ * every 64 updates). */
+#define TRACE_TOP_SLOTS 256
+static const char* sTraceTopPtr[TRACE_TOP_SLOTS];
+static unsigned int sTraceTopCount[TRACE_TOP_SLOTS];
+static void TraceTopCount(const char* message) {
+    unsigned int h = (unsigned int)(((uintptr_t)message >> 3) * 2654435761U) % TRACE_TOP_SLOTS;
+    unsigned int probe;
+    for (probe = 0; probe < 8; ++probe, h = (h + 1) % TRACE_TOP_SLOTS) {
+        if (sTraceTopPtr[h] == message) { ++sTraceTopCount[h]; return; }
+        if (sTraceTopPtr[h] == 0) { sTraceTopPtr[h] = message; sTraceTopCount[h] = 1; return; }
+    }
+}
+void oot_ps3_trace_top(char* out, unsigned int size) {
+    unsigned int best[3] = { TRACE_TOP_SLOTS, TRACE_TOP_SLOTS, TRACE_TOP_SLOTS };
+    unsigned int i, k, used = 0;
+    for (i = 0; i < TRACE_TOP_SLOTS; ++i) {
+        if (sTraceTopPtr[i] == 0) continue;
+        for (k = 0; k < 3; ++k) {
+            if (best[k] == TRACE_TOP_SLOTS || sTraceTopCount[i] > sTraceTopCount[best[k]]) {
+                unsigned int m;
+                for (m = 2; m > k; --m) best[m] = best[m - 1];
+                best[k] = i;
+                break;
+            }
+        }
+    }
+    out[0] = '\0';
+    for (k = 0; k < 3 && best[k] != TRACE_TOP_SLOTS && used + 8 < size; ++k) {
+        char text[48];
+        unsigned int n = 0;
+        const char* message = sTraceTopPtr[best[k]];
+        while (n < sizeof(text) - 1 && message[n] >= 32 && message[n] < 127) { text[n] = message[n]; ++n; }
+        text[n] = '\0';
+        used += (unsigned int)snprintf(out + used, size - used, "%u x '%s' ", sTraceTopCount[best[k]], text);
+        if (used >= size) break;
+    }
+    memset(sTraceTopPtr, 0, sizeof(sTraceTopPtr));
+    memset(sTraceTopCount, 0, sizeof(sTraceTopCount));
+}
 /* Trace files are written only when USRDIR/trace_on exists (release default: off -
  * they cost 4 HDD files + USB). The watchdog's step bookkeeping runs either way. */
 static int sTraceEnabled;
@@ -303,6 +343,7 @@ void oot_ps3_early_trace(const char* message) {
      * menu, 2026-10-10) and replaced the "stopped at" step. */
     if (message == 0 || strncmp(message, "graph: Play audio-", 18) != 0) {
         ++sPs3TraceCount;
+        if (message != 0) TraceTopCount(message);
         if (message != 0) {
             /* Copy only the message (strncpy zero-filled the whole buffer on each of the
              * ~1000 calls per update). Kept even with trace files off: the watchdog's
