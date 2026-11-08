@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_ELF="$ROOT/native-link-check/oot-native.elf"
 TARGET_NAME="oot_ps3_probe_v48"
 TITLE="Ship of Gadeguion"
+APP_VER="01.01"  # Ship of Gadeguion 1.0.1 (shown in the XMB game information)
 APPID="OOTP30048"
 CONTENTID="UP0001-${APPID}_00-OOTPS3RUNTIMEVM0"
 TARGET_ELF="$ROOT/$TARGET_NAME.elf"
@@ -440,7 +441,15 @@ rm -rf "$PKG_BUILD"
 mkdir -p "$PKG_BUILD/pkg/USRDIR"
 cp "${PS3DEV:-/usr/local/ps3dev}/bin/ICON0.PNG" "$PKG_BUILD/pkg/ICON0.PNG"
 make_self_npdrm "$TARGET_ELF" "$PKG_BUILD/pkg/USRDIR/EBOOT.BIN" "$CONTENTID" >/dev/null
-sfo --title "$TITLE" --appid "$APPID" -f "${PS3DEV:-/usr/local/ps3dev}/bin/sfo.xml" "$PKG_BUILD/pkg/PARAM.SFO"
+python3 - "${PS3DEV:-/usr/local/ps3dev}/bin/sfo.xml" "$PKG_BUILD/sfo.xml" "$APP_VER" <<'PY'
+import re, sys
+xml = open(sys.argv[1]).read()
+for key in ("APP_VER", "VERSION"):
+    xml, n = re.subn(r'(<value name="%s" type="string">\s*)[0-9.]+' % key, r"\g<1>" + sys.argv[3], xml)
+    assert n == 1, key
+open(sys.argv[2], "w").write(xml)
+PY
+sfo --title "$TITLE" --appid "$APPID" -f "$PKG_BUILD/sfo.xml" "$PKG_BUILD/pkg/PARAM.SFO"
 pkg --contentid "$CONTENTID" "$PKG_BUILD/pkg/" "$TARGET_PKG"
 
 [ -f "$TARGET_PKG" ] || { echo 'STOP: packaging completed without producing the expected PKG.'; exit 3; }
