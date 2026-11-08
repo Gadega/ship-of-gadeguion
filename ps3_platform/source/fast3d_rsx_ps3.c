@@ -462,6 +462,15 @@ static uint32_t vertexCursor;
 /* GPU vertex pipeline (fast3d_ps3_tnl.vcg): its program, its own record ring
  * (16-byte N64-style vertices) and which vertex program is loaded. */
 static rsxVertexProgram* vpTnl;
+/* Debug menu "GPU vertex path": 2 = white probe shader (positions only). */
+static rsxVertexProgram* vpTnlMain;
+static rsxVertexProgram* vpTnlProbe;
+static void* vpTnlMainCode;
+static void* vpTnlProbeCode;
+static int sTnlDebugMode;
+void oot_ps3_rsx_tnl_debug_mode(int mode) {
+    sTnlDebugMode = mode;
+}
 static void* vpTnlCode;
 static int sCurrentVp = -1; /* 0 = pass-through (CPU path), 1 = T&L */
 enum { TNL_MAX_RECORDS = 65536 };
@@ -589,17 +598,13 @@ static int gpu_prepare(void) {
     if (!vertices[0] || !vertices[1] || !indices ||
         rsxAddressToOffset(indices, &indexOffset)) return 0;
     for (uint32_t i = 0; i < MAX_VERTICES; ++i) indices[i] = (uint16_t)i;
-    vpTnl = (rsxVertexProgram*)oot_ps3_rsx_vpo_tnl;
-    {
-        /* USRDIR/tnl_probe (diagnostic): transform-only shader, every vertex white. */
-        FILE* probe = fopen("/dev_hdd0/game/OOTP30048/USRDIR/tnl_probe", "rb");
-        if (probe != NULL) {
-            fclose(probe);
-            vpTnl = (rsxVertexProgram*)oot_ps3_rsx_vpo_tnl_probe;
-            oot_ps3_early_trace("graph: Play GPU vertex pipeline: probe shader (USRDIR/tnl_probe, white geometry)");
-        }
-    }
-    rsxVertexProgramGetUCode(vpTnl, &vpTnlCode, &bytes);
+    /* Both the real T&L program and the transform-only probe (every vertex white). */
+    vpTnlMain = (rsxVertexProgram*)oot_ps3_rsx_vpo_tnl;
+    vpTnlProbe = (rsxVertexProgram*)oot_ps3_rsx_vpo_tnl_probe;
+    rsxVertexProgramGetUCode(vpTnlMain, &vpTnlMainCode, &bytes);
+    rsxVertexProgramGetUCode(vpTnlProbe, &vpTnlProbeCode, &bytes);
+    vpTnl = vpTnlMain;
+    vpTnlCode = vpTnlMainCode;
     tnlRecords[0] = (uint8_t*)rsxMemalign(128, TNL_MAX_RECORDS * 16);
     tnlRecords[1] = (uint8_t*)rsxMemalign(128, TNL_MAX_RECORDS * 16);
     if (!tnlRecords[0] || !tnlRecords[1]) vpTnl = NULL; /* GPU path unavailable; CPU path still works */
@@ -1275,10 +1280,16 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
         consts[29 * 4 + 2] = sLeanThreshold;
         consts[29 * 4 + 3] = 0.0f;
     }
-    if (sCurrentVp != 1) {
-        rsxLoadVertexProgram(ctx, vpTnl, vpTnlCode);
-        sCurrentVp = 1;
-        ++sTnlVpSwitches;
+    {
+        const int wantVp = sTnlDebugMode == 2 ? 2 : 1; /* 1 = T&L, 2 = white probe */
+        if (sCurrentVp != wantVp) {
+            vpTnl = wantVp == 2 ? vpTnlProbe : vpTnlMain;
+            vpTnlCode = wantVp == 2 ? vpTnlProbeCode : vpTnlMainCode;
+            rsxLoadVertexProgram(ctx, vpTnl, vpTnlCode);
+            sCurrentVp = wantVp;
+            ++sTnlVpSwitches;
+            drawDirty = 1; /* a program load can overwrite constants: send this draw's again */
+        }
     }
     /* Only the constants changed since the last T&L draw (the caller tracks them);
      * C[29] (fragment state flags) every time. */
