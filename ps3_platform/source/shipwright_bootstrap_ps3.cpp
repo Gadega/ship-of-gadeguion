@@ -425,6 +425,15 @@ void Graph_StartFrame(void) {
     // loop moving while we probe game-state and pad/update code.
 }
 
+// The last update's draws, for graph.c's per-update spike line.
+static unsigned long long sLastDrawUs[3];
+static unsigned int sLastDrawn, sLastSkipped;
+void oot_ps3_last_update_draws(unsigned long long drawUs[3], unsigned int* drawn, unsigned int* skipped) {
+    for (int i = 0; i < 3; ++i) drawUs[i] = sLastDrawUs[i];
+    *drawn = sLastDrawn;
+    *skipped = sLastSkipped;
+}
+
 void Graph_ProcessGfxCommands(Gfx* commands) {
     oot_ps3_poll_exit();
     (void)commands;
@@ -467,10 +476,13 @@ void Graph_ProcessGfxCommands(Gfx* commands) {
                 sReportWaitUs += oot_ps3_microseconds_now() - w0;
             }
             bool drawn = false;
+            sLastDrawUs[0] = sLastDrawUs[1] = sLastDrawUs[2] = 0;
+            sLastDrawn = sLastSkipped = 0;
             for (int slot = interpolating ? 0 : 2; slot < 3; ++slot) {
                 const bool last = slot == 2;
                 if (!last && static_cast<int>(oot_ps3_pacing_vblank() - (sSlotBase + static_cast<unsigned int>(slot) + 1U)) >= 0) {
                     ++sReportSkipped; // its vblank has passed
+                    ++sLastSkipped;
                     continue;
                 }
                 const unsigned long long r0 = oot_ps3_microseconds_now();
@@ -479,6 +491,8 @@ void Graph_ProcessGfxCommands(Gfx* commands) {
                 drawn = true;
                 oot_ps3_watchdog_kick();
                 const unsigned long long spent = oot_ps3_microseconds_now() - r0;
+                sLastDrawUs[slot] = spent;
+                ++sLastDrawn;
                 sReportRenderUs += spent;
                 if (spent > sReportMaxDrawUs) sReportMaxDrawUs = spent;
                 ++sReportDrawn;

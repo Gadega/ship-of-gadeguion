@@ -23,6 +23,7 @@ void oot_ps3_audio_kick(void);
 void oot_ps3_audio_lock(void);
 void oot_ps3_audio_unlock(void);
 static unsigned long long sPs3UpdAcc, sPs3GfxAcc, sPs3ResAcc;
+static unsigned long long sPs3LastLogicUs, sPs3LastGfxUs;
 extern unsigned long long oot_ps3_screen_take_flip_wait_us(void);
 extern void oot_ps3_fast3d_take_run_stats(unsigned long long* us, unsigned int* calls);
 void oot_ps3_video_begin_play_probe(void);
@@ -742,6 +743,7 @@ static void RunFrame() {
                     {
                         unsigned long long updateElapsedUs = oot_ps3_microseconds_now() - updateStartUs;
                         sPs3UpdAcc += updateElapsedUs;
+                        sPs3LastLogicUs = updateElapsedUs;
                         snprintf(playFrameTrace, sizeof(playFrameTrace),
                                  "graph: Graph_Update took %llu us", updateElapsedUs);
                         GraphPs3Trace(playFrameTrace);
@@ -754,6 +756,7 @@ static void RunFrame() {
                     {
                         unsigned long long gfxElapsedUs = oot_ps3_microseconds_now() - gfxStartUs;
                         sPs3GfxAcc += gfxElapsedUs;
+                        sPs3LastGfxUs = gfxElapsedUs;
                         snprintf(playFrameTrace, sizeof(playFrameTrace),
                                  "graph: Graph_ProcessGfxCommands took %llu us", gfxElapsedUs);
                         GraphPs3Trace(playFrameTrace);
@@ -770,6 +773,27 @@ static void RunFrame() {
                              "graph: resource loads took %llu us (hits=%u misses=%u)",
                              resourceUs, resourceHits, resourceMisses);
                     GraphPs3Trace(playFrameTrace);
+                    {
+                        // Per-update spike: an in-between frame was skipped or the update ran
+                        // over its 50 ms (3 vblanks at 60 fps). One line per such update.
+                        extern void oot_ps3_last_update_draws(unsigned long long drawUs[3], unsigned int* drawn,
+                                                              unsigned int* skipped);
+                        static unsigned int sSpikeLines = 0;
+                        unsigned long long drawUs[3];
+                        unsigned int drawn = 0, skipped = 0;
+                        oot_ps3_last_update_draws(drawUs, &drawn, &skipped);
+                        if ((skipped != 0 || sPs3LastLogicUs + sPs3LastGfxUs > 52000ULL) && sSpikeLines < 2000U &&
+                            completedFrames > 1U) {
+                            ++sSpikeLines;
+                            snprintf(playFrameTrace, sizeof(playFrameTrace),
+                                     "graph: Play spike scene=%d cs=%d logic=%llu draws=%u skipped=%u "
+                                     "draw=%llu/%llu/%llu res=%llu new=%u actors=%d us",
+                                     (int)play->sceneNum, (int)play->csCtx.frames, sPs3LastLogicUs, drawn, skipped,
+                                     drawUs[0], drawUs[1], drawUs[2], resourceUs, resourceMisses,
+                                     (int)play->actorCtx.total);
+                            oot_ps3_early_trace(playFrameTrace);
+                        }
+                    }
                 }
                 ++completedFrames;
                 {
