@@ -263,6 +263,21 @@ void GameState_ReqPadData(GameState* gameState) {
 // Framebuffer for the Link preview on the pause menu equipment sub-screen
 int gPauseLinkFrameBuffer = -1;
 
+#ifdef __PS3__
+/* Logic-step profile (graph.c "logicprof" line): 0 SetFrameBuffer, 1 state main,
+ * 2 func_800C4344, 3 GameState_Draw + func_800C49F4, 4 rest. Microseconds. */
+extern unsigned long long oot_ps3_microseconds_now(void);
+unsigned long long gPs3GameStepUs[5];
+#define PS3_GAME_STEP(slot, stmt)                                              \
+    do {                                                                       \
+        const unsigned long long ps3T0 = oot_ps3_microseconds_now();          \
+        stmt;                                                                  \
+        gPs3GameStepUs[slot] += oot_ps3_microseconds_now() - ps3T0;            \
+    } while (0)
+#else
+#define PS3_GAME_STEP(slot, stmt) stmt
+#endif
+
 void GameState_Update(GameState* gameState) {
     GAME_PS3_TRACE("game-update: entered");
     GraphicsContext* gfxCtx = gameState->gfxCtx;
@@ -273,7 +288,7 @@ void GameState_Update(GameState* gameState) {
     }
 
     GAME_PS3_TRACE("game-update: before GameState_SetFrameBuffer");
-    GameState_SetFrameBuffer(gfxCtx);
+    PS3_GAME_STEP(0, GameState_SetFrameBuffer(gfxCtx));
     GAME_PS3_TRACE("game-update: after GameState_SetFrameBuffer");
 
 #ifdef __PS3__
@@ -283,10 +298,10 @@ void GameState_Update(GameState* gameState) {
 #endif
 
     GAME_PS3_TRACE("game-update: before state main");
-    gameState->main(gameState);
+    PS3_GAME_STEP(1, gameState->main(gameState));
     GAME_PS3_TRACE("game-update: after state main");
 
-    func_800C4344(gameState);
+    PS3_GAME_STEP(2, func_800C4344(gameState));
 
     if (SREG(63) == 1u) {
         if (SREG(48) < 0) {
@@ -356,8 +371,10 @@ void GameState_Update(GameState* gameState) {
     }
 
     if (R_PAUSE_MENU_MODE != 2u) {
-        GameState_Draw(gameState, gfxCtx);
-        func_800C49F4(gfxCtx);
+        PS3_GAME_STEP(3, {
+            GameState_Draw(gameState, gfxCtx);
+            func_800C49F4(gfxCtx);
+        });
     }
 
     gSaveContext.language = CVarGetInteger(CVAR_SETTING("Languages"), LANGUAGE_ENG);
@@ -370,7 +387,7 @@ void GameState_Update(GameState* gameState) {
         gSaveContext.language = LANGUAGE_ENG;
     }
 
-    GameInteractor_ExecuteOnGameFrameUpdate();
+    PS3_GAME_STEP(4, GameInteractor_ExecuteOnGameFrameUpdate());
     gameState->frames++;
 }
 

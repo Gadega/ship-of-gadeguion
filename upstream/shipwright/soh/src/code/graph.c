@@ -24,6 +24,8 @@ void oot_ps3_audio_lock(void);
 void oot_ps3_audio_unlock(void);
 static unsigned long long sPs3UpdAcc, sPs3GfxAcc, sPs3ResAcc;
 static unsigned long long sPs3LastLogicUs, sPs3LastGfxUs;
+/* 0 GameState_Update inside Graph_Update, 1 whole Graph_Update (logicprof line). */
+unsigned long long gPs3GraphStepUs[2];
 extern unsigned long long oot_ps3_screen_take_flip_wait_us(void);
 extern void oot_ps3_fast3d_take_run_stats(unsigned long long* us, unsigned int* calls);
 void oot_ps3_video_begin_play_probe(void);
@@ -410,7 +412,17 @@ void Graph_Update(GraphicsContext* gfxCtx, GameState* gameState) {
     GameState_ReqPadData(gameState);
     GraphPs3Trace("graph-update: after GameState_ReqPadData");
     GraphPs3Trace("graph-update: before GameState_Update");
+#ifdef __PS3__
+    {
+        extern unsigned long long oot_ps3_microseconds_now(void);
+        extern unsigned long long gPs3GraphStepUs[2];
+        const unsigned long long ps3T0 = oot_ps3_microseconds_now();
+        GameState_Update(gameState);
+        gPs3GraphStepUs[0] += oot_ps3_microseconds_now() - ps3T0;
+    }
+#else
     GameState_Update(gameState);
+#endif
     GraphPs3Trace("graph-update: after GameState_Update");
 
     GraphPs3Trace("graph-update: before final close OPEN_DISPS");
@@ -744,6 +756,21 @@ static void RunFrame() {
                         unsigned long long updateElapsedUs = oot_ps3_microseconds_now() - updateStartUs;
                         sPs3UpdAcc += updateElapsedUs;
                         sPs3LastLogicUs = updateElapsedUs;
+                        gPs3GraphStepUs[1] += updateElapsedUs;
+                        {
+                            static unsigned int sLogicProfUpdates = 0;
+                            extern unsigned long long gPs3GameStepUs[5];
+                            if (++sLogicProfUpdates % 64U == 0U) {
+                                snprintf(playFrameTrace, sizeof(playFrameTrace),
+                                         "graph: Play logicprof/64 graphUpdate=%llu gameStateUpdate=%llu "
+                                         "setFb=%llu main=%llu c4344=%llu gameStateDraw=%llu frameHook=%llu us",
+                                         gPs3GraphStepUs[1], gPs3GraphStepUs[0], gPs3GameStepUs[0],
+                                         gPs3GameStepUs[1], gPs3GameStepUs[2], gPs3GameStepUs[3], gPs3GameStepUs[4]);
+                                oot_ps3_early_trace(playFrameTrace);
+                                memset(gPs3GraphStepUs, 0, sizeof(gPs3GraphStepUs));
+                                memset(gPs3GameStepUs, 0, sizeof(gPs3GameStepUs));
+                            }
+                        }
                         snprintf(playFrameTrace, sizeof(playFrameTrace),
                                  "graph: Graph_Update took %llu us", updateElapsedUs);
                         GraphPs3Trace(playFrameTrace);
