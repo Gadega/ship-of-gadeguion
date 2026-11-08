@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// GPU self-test program (fast3d_rsx_ps3.c Ps3TnlSelfTest): the pass-through program
+// (fast3d_ps3.vcg) with one change. T1: K4 output from a literal (internal) constant.
+void main(float4 position : POSITION, float4 uv : TEXCOORD0,
+          float4 k0 : TEXCOORD1, float4 k1 : TEXCOORD2, float4 k2 : TEXCOORD3,
+          float4 k3 : TEXCOORD4, float4 k4 : TEXCOORD5, float4 state : TEXCOORD6,
+          float4 input3 : TEXCOORD7, float4 input1 : COLOR0, float4 input2 : COLOR1,
+          
+          out float4 outPosition : POSITION, out float4 outUv : TEXCOORD0,
+          out float4 outK0 : TEXCOORD1, out float4 outK1 : TEXCOORD2, out float4 outK2 : TEXCOORD3,
+          out float4 outK3 : TEXCOORD4, out float4 outK4 : TEXCOORD5, out float4 outState : TEXCOORD6,
+          out float4 outInput3 : TEXCOORD7, out float4 outInput1 : COLOR0, out float4 outInput2 : COLOR1) {
+    outPosition = position;
+    outUv = uv;
+    outK0 = k0; outK1 = k1; outK2 = k2; outK3 = k3; outK4 = float4(1.0, 1.0, 1.0, 1.0) + k4 * 0.0;
+    outState = state;
+    outInput3 = input3;
+    outInput1 = input1;
+    outInput2 = input2;
+}
