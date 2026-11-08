@@ -470,6 +470,7 @@ static void* vpTnlMainCode;
 static void* vpTnlProbeCode;
 static void* vpTnlAttrProbeCode;
 static int sTnlDebugMode;
+static int sTnlIndexDraw; /* self-test: draw the T&L records with an index list like the CPU path */
 void oot_ps3_rsx_tnl_debug_mode(int mode) {
     sTnlDebugMode = mode;
 }
@@ -663,6 +664,106 @@ static void Ps3SetSurface(uint32_t format, uint32_t colorOffset, uint32_t colorP
     sTargetHeight = height;
 }
 
+/* ---- GPU vertex path self-test --------------------------------------------------
+ * Once, in the first frame: draws a triangle over the screen centre in several ways
+ * and reads the centre pixel back, so one run shows which variant reaches the screen.
+ * 0 CPU path (control), 1 attribute probe + float records, 2 attribute probe + packed
+ * s16/u8 records, 3 = 2 drawn with an index list, 4 T&L program + float records,
+ * 5 T&L program + packed records. Results: trace "rsx-selftest" lines and the debug
+ * menu (oot_ps3_rsx_selftest_summary). */
+int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int drawDirty, uint32_t firstConst,
+                         uint32_t numConst, uint32_t texture0_id, uint32_t texture1_id, int alpha, int cullMode,
+                         int cullFlip, int floatAttribs);
+int oot_ps3_rsx_triangles(const float* vbo, uint32_t stride, uint32_t triangles, uint32_t texture0_id,
+                          uint32_t texture1_id, int alpha, uint32_t inputs, int material);
+const uint32_t* oot_ps3_shipwright_video_target_pixels(uint32_t* width, uint32_t* height);
+static char sSelfTestSummary[64] = "GPU self-test: not run";
+const char* oot_ps3_rsx_selftest_summary(void) {
+    return sSelfTestSummary;
+}
+static uint32_t Ps3SelfTestPixel(uint32_t width, uint32_t height) {
+    uint32_t w = 0, h = 0;
+    const uint32_t* px;
+    gpu_wait();
+    px = oot_ps3_shipwright_video_target_pixels(&w, &h);
+    if (px == NULL || w != width || h != height) return 0xDEADBEEFU;
+    return px[(size_t)(h / 2) * w + w / 2] & 0x00FFFFFFU;
+}
+static void Ps3SelfTestClear(void) {
+    rsxSetClearColor(ctx, 0);
+    rsxSetClearDepthStencil(ctx, 0xffffff00);
+    rsxClearSurface(ctx, GCM_CLEAR_R | GCM_CLEAR_G | GCM_CLEAR_B | GCM_CLEAR_A | GCM_CLEAR_Z);
+}
+static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
+    static float sConsts[64 * 4];
+    /* Packed T&L records: ob s16 x3, palette constant index (40), tc s16 x2, rgba u8. */
+    static const int16_t kTri[3][2] = { { -1024, -1024 }, { 1024, -1024 }, { 0, 1024 } };
+    uint8_t records[3 * 16];
+    uint32_t results[6];
+    char line[160];
+    int v, i, used = 0;
+    for (i = 0; i < 3; ++i) {
+        uint8_t* r = records + i * 16;
+        const int16_t ob[3] = { kTri[i][0], kTri[i][1], 0 };
+        const uint16_t slot = 40, tc[2] = { 0, 0 };
+        memcpy(r, ob, 6);
+        memcpy(r + 6, &slot, 2);
+        memcpy(r + 8, tc, 4);
+        r[12] = r[13] = r[14] = r[15] = 255;
+    }
+    /* Constants for the T&L program: clip = (x/2048, y/2048, 0.5, 1), no lighting/fog,
+     * combiner k4 = white (k0..k3 = 0). */
+    memset(sConsts, 0, sizeof(sConsts));
+    sConsts[24 * 4 + 0] = sConsts[24 * 4 + 1] = sConsts[24 * 4 + 2] = sConsts[24 * 4 + 3] = 1.0f;
+    sConsts[40 * 4 + 0] = 1.0f / 2048.0f;  /* R0 */
+    sConsts[41 * 4 + 1] = 1.0f / 2048.0f;  /* R1 */
+    sConsts[43 * 4 + 2] = 0.5f;            /* R3 = (0, 0, 0.5, 1) */
+    sConsts[43 * 4 + 3] = 1.0f;
+    for (v = 0; v < 6; ++v) {
+        Ps3SelfTestClear();
+        rsxSetDepthTestEnable(ctx, GCM_FALSE);
+        rsxSetDepthWriteEnable(ctx, GCM_FALSE);
+        rsxSetCullFaceEnable(ctx, GCM_FALSE);
+        sCullEnabled = 0;
+        rsxSetColorMask(ctx, GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A);
+        sDepthTest = sDepthWrite = sZmodeDecal = 0;
+        if (v == 0) {
+            /* CPU path: x, y, z, w, u, v; combiner D = TEXEL0 of the white fallback texture. */
+            const float texel0 = 8.0f * 4096.0f;
+            const float packs[4] = { texel0, texel0, texel0, texel0 };
+            const float vbo[3][6] = { { -0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f },
+                                      { 0.5f, -0.5f, 0.5f, 1.0f, 0.0f, 0.0f },
+                                      { 0.0f, 0.5f, 0.5f, 1.0f, 0.0f, 0.0f } };
+            oot_ps3_rsx_set_draw_state(4U, 0xFFFFU, 0xFFFFU, 6U, 4U, 0.0f, packs);
+            oot_ps3_rsx_triangles(&vbo[0][0], 6U, 1U, 0U, 0U, 0, 0U, 0);
+        } else {
+            sTnlDebugMode = (v == 1 || v == 2 || v == 3) ? 4 : 1;
+            sTnlIndexDraw = v == 3;
+            oot_ps3_rsx_tnl_draw(records, 3U, sConsts, 1, 40U, 55U, 0U, 0U, 0, 0, 0, (v == 1 || v == 4) ? 1 : 0);
+            sTnlIndexDraw = 0;
+        }
+        results[v] = Ps3SelfTestPixel(width, height);
+        tnlCursor = 0;
+        vertexCursor = 0;
+    }
+    sTnlDebugMode = 0;
+    sCurrentVp = -1;
+    sCurrentFp = -1;
+    used = snprintf(sSelfTestSummary, sizeof(sSelfTestSummary), "GPU self-test:");
+    for (v = 0; v < 6; ++v) {
+        const int pass = results[v] != 0xDEADBEEFU && (results[v] & 0xFF) > 0x80 && ((results[v] >> 8) & 0xFF) > 0x80 &&
+                         ((results[v] >> 16) & 0xFF) > 0x80;
+        if (used < (int)sizeof(sSelfTestSummary) - 3)
+            used += snprintf(sSelfTestSummary + used, sizeof(sSelfTestSummary) - (size_t)used, " %d%s", v, pass ? "ok" : "X");
+        snprintf(line, sizeof(line), "graph: Play rsx-selftest %d %s: centre pixel %06x -> %s", v,
+                 v == 0 ? "CPU path (control)" : v == 1 ? "attr probe, float records" : v == 2 ? "attr probe, packed records"
+                 : v == 3 ? "attr probe, packed records, index list" : v == 4 ? "T&L program, float records"
+                 : "T&L program, packed records", (unsigned)results[v], pass ? "PASS" : "FAIL");
+        oot_ps3_early_trace(line);
+    }
+    oot_ps3_early_trace(sSelfTestSummary);
+}
+
 int oot_ps3_rsx_begin(uint32_t width, uint32_t height) {
     if (!gpu_prepare() || !gpu_depth(width, height)) return 0;
     ctx = (gcmContextData*)oot_ps3_shipwright_video_rsx_context();
@@ -671,6 +772,14 @@ int oot_ps3_rsx_begin(uint32_t width, uint32_t height) {
                   height);
     sTargetFb = -1;
     sTargetFbForStall = -1;
+    {
+        static int sSelfTested = 0;
+        if (!sSelfTested && vpTnlMain != NULL && tnlRecords[0] != NULL) {
+            sSelfTested = 1;
+            rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA);
+            Ps3TnlSelfTest(width, height);
+        }
+    }
     rsxSetCullFaceEnable(ctx, GCM_FALSE);
     rsxSetBlendFunc(ctx, GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA,
                     GCM_SRC_ALPHA, GCM_ONE_MINUS_SRC_ALPHA);
@@ -1374,7 +1483,11 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
         rsxSetCullFaceEnable(ctx, GCM_FALSE);
         sCullEnabled = 0;
     }
-    rsxDrawVertexArray(ctx, GCM_TYPE_TRIANGLES, 0, count);
+    if (sTnlIndexDraw) {
+        rsxDrawIndexArray(ctx, GCM_TYPE_TRIANGLES, indexOffset, count, GCM_INDEX_TYPE_16B, GCM_LOCATION_RSX);
+    } else {
+        rsxDrawVertexArray(ctx, GCM_TYPE_TRIANGLES, 0, count);
+    }
     tnlCursor += count * units;
     ++sTnlDraws;
     sTnlVerts += count;

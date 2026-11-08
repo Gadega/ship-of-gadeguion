@@ -55,6 +55,7 @@ void oot_ps3_rsx_set_draw_state(uint32_t uv0Off, uint32_t uv1Off, uint32_t fogOf
                                 uint32_t inputPer, float flags, const float packs[4]);
 int oot_ps3_rsx_triangles(const float* vbo, uint32_t stride, uint32_t triangles, uint32_t texture0_id,
                           uint32_t texture1_id, int alpha, uint32_t inputs, int material);
+const char* oot_ps3_rsx_selftest_summary(void);
 /* ps3_debug_game.c */
 int oot_ps3_debug_game_info(char* line1, char* line2, unsigned int size);
 int oot_ps3_debug_warp_count(void);
@@ -220,6 +221,7 @@ static void BuildMain(void) {
         Line(6 + i, i == sSel ? COL_SELECT : COL_TEXT, "%s %-40s %s", i == sSel ? ">" : " ", kLabels[i], value);
     }
     if (sSel == ITEM_TNL) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (probes draw white, no depth/cull; attr probe ignores matrices)");
+    Line(6 + ITEM_COUNT + 3, COL_DIM, "%s", oot_ps3_rsx_selftest_summary());
     if (sSel == ITEM_FPS) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (unlocked: no vsync, may tear; 20: no interpolation)");
     if (sSel == ITEM_RES) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (native = 1080p on a 1080p TV; restart the game to apply)");
     Line(PANEL_ROWS - 3, COL_WARN, "%s", sStatus);
