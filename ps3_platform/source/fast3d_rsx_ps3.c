@@ -1286,7 +1286,7 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
     }
     {
         /* 1 = T&L, 2 = white probe, 3 = attribute probe (raw model coordinates) */
-        const int wantVp = sTnlDebugMode == 2 ? 2 : sTnlDebugMode == 4 ? 3 : 1;
+        const int wantVp = sTnlDebugMode == 2 ? 2 : (sTnlDebugMode == 4 || sTnlDebugMode == 5) ? 3 : 1;
         if (sCurrentVp != wantVp) {
             vpTnl = wantVp == 2 ? vpTnlProbe : wantVp == 3 ? vpTnlAttrProbe : vpTnlMain;
             vpTnlCode = wantVp == 2 ? vpTnlProbeCode : wantVp == 3 ? vpTnlAttrProbeCode : vpTnlMainCode;
@@ -1352,7 +1352,7 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX7, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     {
         /* The probes (debug modes 2 and 4) draw without depth test or culling. */
-        const int probe = sTnlDebugMode == 2 || sTnlDebugMode == 4;
+        const int probe = sTnlDebugMode == 2 || sTnlDebugMode == 4 || sTnlDebugMode == 5;
         if (probe) cullMode = 0;
         rsxSetDepthTestEnable(ctx, (sDepthTest && !probe) ? GCM_TRUE : GCM_FALSE);
         rsxSetDepthWriteEnable(ctx, (sDepthWrite && !probe) ? GCM_TRUE : GCM_FALSE);

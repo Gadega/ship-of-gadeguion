@@ -210,9 +210,10 @@ static void BuildMain(void) {
             } break;
             case ITEM_RES: snprintf(value, sizeof(value), "[%s]", Res720() ? "720p" : "NATIVE"); break;
             case ITEM_TNL: {
-                static const char* const kTnl[5] = { "[OFF]", "[ON]", "[PROBE]", "[NO CULL]", "[ATTR PROBE]" };
+                static const char* const kTnl[7] = { "[OFF]", "[ON]", "[PROBE]", "[NO CULL]", "[ATTR PROBE]",
+                                                     "[ATTR PROBE F]", "[ON FLOAT]" };
                 const int mode = oot_ps3_tnl_requested();
-                snprintf(value, sizeof(value), "%s", kTnl[mode >= 0 && mode < 5 ? mode : 0]);
+                snprintf(value, sizeof(value), "%s", kTnl[mode >= 0 && mode < 7 ? mode : 0]);
             } break;
             default: break;
         }
@@ -331,8 +332,8 @@ static void Activate(void) {
             SetStatus("Resolution saved: restart the game to apply");
             break;
         case ITEM_TNL:
-            /* off -> on -> white probe -> no culling -> attribute probe -> off */
-            oot_ps3_tnl_set_requested((oot_ps3_tnl_requested() + 1) % 5);
+            /* off -> on -> white probe -> no culling -> attr probe -> attr probe (float) -> on (float) */
+            oot_ps3_tnl_set_requested((oot_ps3_tnl_requested() + 1) % 7);
             break;
         case ITEM_MARK:
             if (!oot_ps3_trace_enabled()) oot_ps3_trace_set_enabled(1);
