@@ -30,27 +30,35 @@ if [ -s "$OUTPUT" ] && [ -s "$ROOT/native-link-check/fast3d_ps3.vpo" ] &&
    [ ! "$ROOT/ps3_platform/shaders/fast3d_ps3_selftest9.vcg" -nt "$OUTPUT" ] &&
    [ ! "$ROOT/ps3_platform/shaders/fast3d_ps3_selftest10.vcg" -nt "$OUTPUT" ] &&
    [ ! "$ROOT/ps3_platform/shaders/fast3d_ps3_selftest11.vcg" -nt "$OUTPUT" ] &&
+   [ ! "$ROOT/scripts/patch-vp-relative.py" -nt "$OUTPUT" ] &&
    [ ! "$CGCOMP_BIN" -nt "$OUTPUT" ]; then
     echo 'FAST3D RSX: unchanged shader binaries reused'
     exit 0
 fi
 cgcomp -v -Wcg,-strict "$ROOT/ps3_platform/shaders/fast3d_ps3.vcg" "$ROOT/native-link-check/fast3d_ps3.vpo"
-cgcomp -v -Wcg,-strict "$ROOT/ps3_platform/shaders/fast3d_ps3_tnl.vcg" "$ROOT/native-link-check/fast3d_ps3_tnl.vpo"
-cgcomp -v -Wcg,-strict "$ROOT/ps3_platform/shaders/fast3d_ps3_tnl_probe.vcg" "$ROOT/native-link-check/fast3d_ps3_tnl_probe.vpo"
+# Vertex programs that use c[A0.x + n]: cgcomp loses the relative addressing, so they are
+# compiled with an assembly listing (-d) and patched (scripts/patch-vp-relative.py).
+for vp in fast3d_ps3_tnl fast3d_ps3_tnl_probe; do
+    cgcomp -v -d -Wcg,-strict "$ROOT/ps3_platform/shaders/$vp.vcg" "$ROOT/native-link-check/$vp.vpo"
+    python3 "$ROOT/scripts/patch-vp-relative.py" "$ROOT/native-link-check/$vp.vpo" "$ROOT/native-link-check/$vp.vpo.dump"
+done
 cgcomp -v -Wcg,-strict "$ROOT/ps3_platform/shaders/fast3d_ps3_tnl_attrprobe.vcg" "$ROOT/native-link-check/fast3d_ps3_tnl_attrprobe.vpo"
 cgcomp -v -Wcg,-strict "$ROOT/ps3_platform/shaders/fast3d_ps3_tnl_attrprobe2.vcg" "$ROOT/native-link-check/fast3d_ps3_tnl_attrprobe2.vpo"
 for t in 1 2 3 4 5 6 7 8 9 10 11; do
-    cgcomp -v -Wcg,-strict "$ROOT/ps3_platform/shaders/fast3d_ps3_selftest$t.vcg" "$ROOT/native-link-check/fast3d_ps3_selftest$t.vpo"
+    cgcomp -v -d -Wcg,-strict "$ROOT/ps3_platform/shaders/fast3d_ps3_selftest$t.vcg" "$ROOT/native-link-check/fast3d_ps3_selftest$t.vpo"
 done
+# Self-test keeps an unpatched copy of program 10 (relative addressing) next to the patched one.
+cp "$ROOT/native-link-check/fast3d_ps3_selftest10.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest10raw.vpo"
+python3 "$ROOT/scripts/patch-vp-relative.py" "$ROOT/native-link-check/fast3d_ps3_selftest10.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest10.vpo.dump"
 cgcomp -f -Wcg,-strict "$ROOT/ps3_platform/shaders/fast3d_ps3.fcg" "$ROOT/native-link-check/fast3d_ps3.fpo"
 cgcomp -f -Wcg,-strict "$ROOT/ps3_platform/shaders/fast3d_ps3_generic.fcg" "$ROOT/native-link-check/fast3d_ps3_generic.fpo"
 cgcomp -f -Wcg,-strict "$ROOT/ps3_platform/shaders/fast3d_ps3_generic_clip.fcg" "$ROOT/native-link-check/fast3d_ps3_generic_clip.fpo"
-python3 - "$ROOT/native-link-check/fast3d_ps3.vpo" "$ROOT/native-link-check/fast3d_ps3.fpo" "$ROOT/native-link-check/fast3d_ps3_generic.fpo" "$ROOT/native-link-check/fast3d_ps3_generic_clip.fpo" "$ROOT/native-link-check/fast3d_ps3_tnl.vpo" "$ROOT/native-link-check/fast3d_ps3_tnl_probe.vpo" "$ROOT/native-link-check/fast3d_ps3_tnl_attrprobe.vpo" "$ROOT/native-link-check/fast3d_ps3_tnl_attrprobe2.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest1.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest2.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest3.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest4.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest5.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest6.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest7.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest8.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest9.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest10.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest11.vpo" "$OUTPUT" <<'PY'
+python3 - "$ROOT/native-link-check/fast3d_ps3.vpo" "$ROOT/native-link-check/fast3d_ps3.fpo" "$ROOT/native-link-check/fast3d_ps3_generic.fpo" "$ROOT/native-link-check/fast3d_ps3_generic_clip.fpo" "$ROOT/native-link-check/fast3d_ps3_tnl.vpo" "$ROOT/native-link-check/fast3d_ps3_tnl_probe.vpo" "$ROOT/native-link-check/fast3d_ps3_tnl_attrprobe.vpo" "$ROOT/native-link-check/fast3d_ps3_tnl_attrprobe2.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest1.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest2.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest3.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest4.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest5.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest6.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest7.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest8.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest9.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest10.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest11.vpo" "$ROOT/native-link-check/fast3d_ps3_selftest10raw.vpo" "$OUTPUT" <<'PY'
 import pathlib, sys
-vpo, fpo, fpog, fpoc, vpotnl, vpoprobe, vpoattr, vpoattr2, st1, st2, st3, st4, st5, st6, st7, st8, st9, st10, st11, out = map(pathlib.Path, sys.argv[1:])
+vpo, fpo, fpog, fpoc, vpotnl, vpoprobe, vpoattr, vpoattr2, st1, st2, st3, st4, st5, st6, st7, st8, st9, st10, st11, st10raw, out = map(pathlib.Path, sys.argv[1:])
 with out.open('w') as target:
     target.write('/* Generated locally from our own generic Cg shader sources. */\n')
-    for path, name in ((vpo, 'oot_ps3_rsx_vpo'), (fpo, 'oot_ps3_rsx_fpo'), (fpog, 'oot_ps3_rsx_fpo_generic'), (fpoc, 'oot_ps3_rsx_fpo_generic_clip'), (vpotnl, 'oot_ps3_rsx_vpo_tnl'), (vpoprobe, 'oot_ps3_rsx_vpo_tnl_probe'), (vpoattr, 'oot_ps3_rsx_vpo_tnl_attrprobe'), (vpoattr2, 'oot_ps3_rsx_vpo_tnl_attrprobe2'), (st1, 'oot_ps3_rsx_vpo_selftest1'), (st2, 'oot_ps3_rsx_vpo_selftest2'), (st3, 'oot_ps3_rsx_vpo_selftest3'), (st4, 'oot_ps3_rsx_vpo_selftest4'), (st5, 'oot_ps3_rsx_vpo_selftest5'), (st6, 'oot_ps3_rsx_vpo_selftest6'), (st7, 'oot_ps3_rsx_vpo_selftest7'), (st8, 'oot_ps3_rsx_vpo_selftest8'), (st9, 'oot_ps3_rsx_vpo_selftest9'), (st10, 'oot_ps3_rsx_vpo_selftest10'), (st11, 'oot_ps3_rsx_vpo_selftest11')):
+    for path, name in ((vpo, 'oot_ps3_rsx_vpo'), (fpo, 'oot_ps3_rsx_fpo'), (fpog, 'oot_ps3_rsx_fpo_generic'), (fpoc, 'oot_ps3_rsx_fpo_generic_clip'), (vpotnl, 'oot_ps3_rsx_vpo_tnl'), (vpoprobe, 'oot_ps3_rsx_vpo_tnl_probe'), (vpoattr, 'oot_ps3_rsx_vpo_tnl_attrprobe'), (vpoattr2, 'oot_ps3_rsx_vpo_tnl_attrprobe2'), (st1, 'oot_ps3_rsx_vpo_selftest1'), (st2, 'oot_ps3_rsx_vpo_selftest2'), (st3, 'oot_ps3_rsx_vpo_selftest3'), (st4, 'oot_ps3_rsx_vpo_selftest4'), (st5, 'oot_ps3_rsx_vpo_selftest5'), (st6, 'oot_ps3_rsx_vpo_selftest6'), (st7, 'oot_ps3_rsx_vpo_selftest7'), (st8, 'oot_ps3_rsx_vpo_selftest8'), (st9, 'oot_ps3_rsx_vpo_selftest9'), (st10, 'oot_ps3_rsx_vpo_selftest10'), (st11, 'oot_ps3_rsx_vpo_selftest11'), (st10raw, 'oot_ps3_rsx_vpo_selftest10raw')):
         data = path.read_bytes()
         if not data or len(data) > 1024 * 1024:
             raise SystemExit('BLOCKED: RSX shader has an invalid compiled length')

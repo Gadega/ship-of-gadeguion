@@ -762,25 +762,21 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
     /* Clip-space triangle for the pass-through program; raw coordinates for the probes
      * (they divide by 2048). */
     static const float kClip[3][4] = { { -0.5f, -0.5f, 0.5f, 1.0f }, { 0.5f, -0.5f, 0.5f, 1.0f }, { 0.0f, 0.5f, 0.5f, 1.0f } };
-    static const float kRaw[3][4] = { { -1024.0f, -1024.0f, 0.0f, 40.0f }, { 1024.0f, -1024.0f, 0.0f, 40.0f },
-                                      { 0.0f, 1024.0f, 0.0f, 40.0f } };
     static const char* const kNames[8] = {
-        "CPU path (control)", "pass-through program", "E: position z,w from constants",
-        "F: position = uploaded matrix, relative addressing (A0)", "G: position = uploaded matrix, fixed addresses",
-        "attr probe (reference, fails)", "C: position only (reference, passes)",
-        "T&L draw path, float records",
+        "CPU path (control)", "F relative addressing, cgcomp output as is", "F relative addressing, patched",
+        "G fixed addresses (reference)", "T&L draw path, float records", "T&L draw path, packed records",
+        "T&L white probe (patched)", "C position only (reference)",
     };
     static const float kIdentity[4][4] = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 } };
-    const unsigned char* const kBlobs[5] = { oot_ps3_rsx_vpo_selftest9, oot_ps3_rsx_vpo_selftest10,
-                                             oot_ps3_rsx_vpo_selftest11, oot_ps3_rsx_vpo_tnl_attrprobe,
-                                             oot_ps3_rsx_vpo_selftest7 };
+    const unsigned char* const kBlobs[4] = { oot_ps3_rsx_vpo_selftest10raw, oot_ps3_rsx_vpo_selftest10,
+                                             oot_ps3_rsx_vpo_selftest11, oot_ps3_rsx_vpo_selftest7 };
     static float sConsts[64 * 4];
-    rsxVertexProgram* tp[5];
-    void* tc[5];
+    rsxVertexProgram* tp[4];
+    void* tc[4];
     uint32_t bytes, results[8];
     char line[200];
     int v, used;
-    for (v = 0; v < 5; ++v) {
+    for (v = 0; v < 4; ++v) {
         tp[v] = (rsxVertexProgram*)kBlobs[v];
         rsxVertexProgramGetUCode(tp[v], &tc[v], &bytes);
     }
@@ -809,18 +805,12 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
             sCurrentFp = -1;
             oot_ps3_rsx_set_draw_state(4U, 0xFFFFU, 0xFFFFU, 6U, 4U, 0.0f, packs);
             oot_ps3_rsx_triangles(&vbo[0][0], 6U, 1U, 0U, 0U, 0, 0U, 0);
-        } else if (v == 1) {
-            Ps3RawTestDraw(vp, vpCode, kClip, 1, 1, NULL, 0, 0);
-        } else if (v == 2) {
-            Ps3RawTestDraw(tp[0], tc[0], kClip, 1, 1, NULL, 0, 0);
+        } else if (v == 1 || v == 2) {
+            Ps3RawTestDraw(tp[v - 1], tc[v - 1], kClip, 1, 1, &kIdentity[0][0], 40, 4); /* rows at 40..43 only */
         } else if (v == 3) {
-            Ps3RawTestDraw(tp[1], tc[1], kClip, 1, 1, &kIdentity[0][0], 40, 4); /* rows at 40..43 only */
-        } else if (v == 4) {
             Ps3RawTestDraw(tp[2], tc[2], kClip, 1, 1, &kIdentity[0][0], 0, 4); /* compiled to c[0..3] */
-        } else if (v == 5) {
-            Ps3RawTestDraw(tp[3], tc[3], kRaw, 1, 1, NULL, 0, 0);
-        } else if (v == 6) {
-            Ps3RawTestDraw(tp[4], tc[4], kClip, 1, 1, NULL, 0, 0);
+        } else if (v == 7) {
+            Ps3RawTestDraw(tp[3], tc[3], kClip, 1, 1, NULL, 0, 0);
         } else {
             static const int16_t kTri[3][2] = { { -1024, -1024 }, { 1024, -1024 }, { 0, 1024 } };
             uint8_t records[3 * 16];
@@ -834,9 +824,9 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
                 memcpy(r + 8, tcz, 4);
                 r[12] = r[13] = r[14] = r[15] = 255;
             }
-            sTnlDebugMode = 1;
+            sTnlDebugMode = v == 6 ? 2 : 1;
             sCurrentVp = -1;
-            oot_ps3_rsx_tnl_draw(records, 3U, sConsts, 1, 40U, 55U, 0U, 0U, 0, 0, 0, 1);
+            oot_ps3_rsx_tnl_draw(records, 3U, sConsts, 1, 40U, 55U, 0U, 0U, 0, 0, 0, v == 4 ? 1 : 0);
         }
         results[v] = Ps3SelfTestPixel(width, height);
         tnlCursor = 0;
