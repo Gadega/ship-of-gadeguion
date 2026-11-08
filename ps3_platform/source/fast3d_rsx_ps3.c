@@ -465,8 +465,10 @@ static rsxVertexProgram* vpTnl;
 /* Debug menu "GPU vertex path": 2 = white probe shader (positions only). */
 static rsxVertexProgram* vpTnlMain;
 static rsxVertexProgram* vpTnlProbe;
+static rsxVertexProgram* vpTnlAttrProbe; /* mode 4: raw model coordinates, no constants */
 static void* vpTnlMainCode;
 static void* vpTnlProbeCode;
+static void* vpTnlAttrProbeCode;
 static int sTnlDebugMode;
 void oot_ps3_rsx_tnl_debug_mode(int mode) {
     sTnlDebugMode = mode;
@@ -603,6 +605,8 @@ static int gpu_prepare(void) {
     vpTnlProbe = (rsxVertexProgram*)oot_ps3_rsx_vpo_tnl_probe;
     rsxVertexProgramGetUCode(vpTnlMain, &vpTnlMainCode, &bytes);
     rsxVertexProgramGetUCode(vpTnlProbe, &vpTnlProbeCode, &bytes);
+    vpTnlAttrProbe = (rsxVertexProgram*)oot_ps3_rsx_vpo_tnl_attrprobe;
+    rsxVertexProgramGetUCode(vpTnlAttrProbe, &vpTnlAttrProbeCode, &bytes);
     vpTnl = vpTnlMain;
     vpTnlCode = vpTnlMainCode;
     tnlRecords[0] = (uint8_t*)rsxMemalign(128, TNL_MAX_RECORDS * 16);
@@ -1281,10 +1285,11 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
         consts[29 * 4 + 3] = 0.0f;
     }
     {
-        const int wantVp = sTnlDebugMode == 2 ? 2 : 1; /* 1 = T&L, 2 = white probe */
+        /* 1 = T&L, 2 = white probe, 3 = attribute probe (raw model coordinates) */
+        const int wantVp = sTnlDebugMode == 2 ? 2 : sTnlDebugMode == 4 ? 3 : 1;
         if (sCurrentVp != wantVp) {
-            vpTnl = wantVp == 2 ? vpTnlProbe : vpTnlMain;
-            vpTnlCode = wantVp == 2 ? vpTnlProbeCode : vpTnlMainCode;
+            vpTnl = wantVp == 2 ? vpTnlProbe : wantVp == 3 ? vpTnlAttrProbe : vpTnlMain;
+            vpTnlCode = wantVp == 2 ? vpTnlProbeCode : wantVp == 3 ? vpTnlAttrProbeCode : vpTnlMainCode;
             rsxLoadVertexProgram(ctx, vpTnl, vpTnlCode);
             sCurrentVp = wantVp;
             ++sTnlVpSwitches;
@@ -1345,8 +1350,13 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX5, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX6, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX7, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-    rsxSetDepthTestEnable(ctx, sDepthTest ? GCM_TRUE : GCM_FALSE);
-    rsxSetDepthWriteEnable(ctx, sDepthWrite ? GCM_TRUE : GCM_FALSE);
+    {
+        /* The probes (debug modes 2 and 4) draw without depth test or culling. */
+        const int probe = sTnlDebugMode == 2 || sTnlDebugMode == 4;
+        if (probe) cullMode = 0;
+        rsxSetDepthTestEnable(ctx, (sDepthTest && !probe) ? GCM_TRUE : GCM_FALSE);
+        rsxSetDepthWriteEnable(ctx, (sDepthWrite && !probe) ? GCM_TRUE : GCM_FALSE);
+    }
     rsxSetDepthFunc(ctx, sZmodeDecal ? GCM_LEQUAL : GCM_LESS);
     rsxSetPolygonOffsetFillEnable(ctx, sZmodeDecal ? GCM_TRUE : GCM_FALSE);
     if (sZmodeDecal) rsxSetPolygonOffset(ctx, -2.0f, -2.0f);

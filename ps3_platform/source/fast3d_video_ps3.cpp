@@ -733,14 +733,14 @@ static int Ps3FlagFile(const char* path) {
 static int sTnlEnabled = -1;
 extern "C" void oot_ps3_rsx_tnl_debug_mode(int mode);
 // Debug menu "GPU vertex path": 0 off, 1 on, 2 on with the white probe shader, 3 on without
-// culling. Remembered in USRDIR/tnl_on (its first byte is the mode digit; empty = 1).
+// culling, 4 on with the attribute probe (no constants). Remembered in USRDIR/tnl_on (its first byte is the mode digit; empty = 1).
 extern "C" int oot_ps3_tnl_requested(void) {
     if (sTnlEnabled < 0) {
         FILE* flag = fopen("/dev_hdd0/game/OOTP30048/USRDIR/tnl_on", "rb");
         sTnlEnabled = 0;
         if (flag != nullptr) {
             const int c = fgetc(flag);
-            sTnlEnabled = (c >= '1' && c <= '3') ? c - '0' : 1;
+            sTnlEnabled = (c >= '1' && c <= '4') ? c - '0' : 1;
             fclose(flag);
         }
         oot_ps3_rsx_tnl_debug_mode(sTnlEnabled);
@@ -748,7 +748,7 @@ extern "C" int oot_ps3_tnl_requested(void) {
     return sTnlEnabled;
 }
 extern "C" void oot_ps3_tnl_set_requested(int mode) {
-    sTnlEnabled = mode >= 0 && mode <= 3 ? mode : 0;
+    sTnlEnabled = mode >= 0 && mode <= 4 ? mode : 0;
     oot_ps3_rsx_tnl_debug_mode(sTnlEnabled);
     if (sTnlEnabled != 0) {
         FILE* flag = fopen("/dev_hdd0/game/OOTP30048/USRDIR/tnl_on", "wb");
@@ -759,7 +759,8 @@ extern "C" void oot_ps3_tnl_set_requested(int mode) {
     } else {
         remove("/dev_hdd0/game/OOTP30048/USRDIR/tnl_on");
     }
-    static const char* const kModes[4] = { "off", "on", "on (white probe shader)", "on (no culling)" };
+    static const char* const kModes[5] = { "off", "on", "on (white probe shader)", "on (no culling)",
+                                           "on (attribute probe: raw model coordinates)" };
     char line[96];
     snprintf(line, sizeof(line), "graph: Play GPU vertex pipeline %s (debug menu)", kModes[sTnlEnabled]);
     oot_ps3_early_trace(line);

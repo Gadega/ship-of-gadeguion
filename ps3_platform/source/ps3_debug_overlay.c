@@ -210,15 +210,15 @@ static void BuildMain(void) {
             } break;
             case ITEM_RES: snprintf(value, sizeof(value), "[%s]", Res720() ? "720p" : "NATIVE"); break;
             case ITEM_TNL: {
-                static const char* const kTnl[4] = { "[OFF]", "[ON]", "[ON: PROBE]", "[ON: NO CULL]" };
+                static const char* const kTnl[5] = { "[OFF]", "[ON]", "[PROBE]", "[NO CULL]", "[ATTR PROBE]" };
                 const int mode = oot_ps3_tnl_requested();
-                snprintf(value, sizeof(value), "%s", kTnl[mode >= 0 && mode < 4 ? mode : 0]);
+                snprintf(value, sizeof(value), "%s", kTnl[mode >= 0 && mode < 5 ? mode : 0]);
             } break;
             default: break;
         }
         Line(6 + i, i == sSel ? COL_SELECT : COL_TEXT, "%s %-40s %s", i == sSel ? ">" : " ", kLabels[i], value);
     }
-    if (sSel == ITEM_TNL) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (probe: white geometry = positions only; no cull: culling off)");
+    if (sSel == ITEM_TNL) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (probes draw white, no depth/cull; attr probe ignores matrices)");
     if (sSel == ITEM_FPS) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (unlocked: no vsync, may tear; 20: no interpolation)");
     if (sSel == ITEM_RES) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (native = 1080p on a 1080p TV; restart the game to apply)");
     Line(PANEL_ROWS - 3, COL_WARN, "%s", sStatus);
@@ -331,8 +331,8 @@ static void Activate(void) {
             SetStatus("Resolution saved: restart the game to apply");
             break;
         case ITEM_TNL:
-            /* off -> on -> on (white probe) -> on (no culling) -> off */
-            oot_ps3_tnl_set_requested((oot_ps3_tnl_requested() + 1) % 4);
+            /* off -> on -> white probe -> no culling -> attribute probe -> off */
+            oot_ps3_tnl_set_requested((oot_ps3_tnl_requested() + 1) % 5);
             break;
         case ITEM_MARK:
             if (!oot_ps3_trace_enabled()) oot_ps3_trace_set_enabled(1);
