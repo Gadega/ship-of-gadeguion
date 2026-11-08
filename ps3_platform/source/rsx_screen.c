@@ -156,14 +156,14 @@ int oot_ps3_screen_init(OotPs3Screen* screen) {
     }
     oot_ps3_early_trace("rsx-init: video state and resolution ready");
 
-    /* Render at 1280x720 on a 1080p display (the TV scales): 2.25x fewer pixels to shade,
-     * and the RSX was the limit in wide views at 1080p. USRDIR/res1080 keeps native 1080p. */
+    /* Native resolution (1080p on a 1080p display) by default. USRDIR/res720 (debug
+     * menu "Resolution") renders 1280x720 instead and lets the TV scale: 2.25x fewer
+     * pixels to shade when the RSX is the limit. */
     {
-        FILE* keep1080 = fopen("/dev_hdd0/game/OOTP30048/USRDIR/res1080", "rb");
-        if (keep1080 != NULL) {
-            fclose(keep1080);
-            oot_ps3_early_trace("rsx-init: USRDIR/res1080 present; keeping the display resolution");
-        } else if (state.displayMode.resolution == VIDEO_RESOLUTION_1080) {
+        FILE* force720 = fopen("/dev_hdd0/game/OOTP30048/USRDIR/res720", "rb");
+        if (force720 == NULL) {
+            oot_ps3_early_trace("rsx-init: rendering at the display resolution (USRDIR/res720 for 720p)");
+        } else if ((fclose(force720), state.displayMode.resolution == VIDEO_RESOLUTION_1080)) {
             videoResolution res720;
             videoConfiguration try720;
             memset(&try720, 0, sizeof(try720));
@@ -277,6 +277,13 @@ void oot_ps3_screen_rect(OotPs3DisplayBuffer* buffer, u16 x, u16 y, u16 width, u
             row[col_x] = color;
         }
     }
+}
+
+/* Debug menu "Frame rate: unlocked": flip at the next horizontal sync instead of the
+ * vertical blank (no 60 fps cap; may tear). */
+void oot_ps3_screen_set_vsync(int on) {
+    gcmSetFlipMode(on ? GCM_FLIP_VSYNC : GCM_FLIP_HSYNC);
+    oot_ps3_early_trace(on ? "rsx-present: flips wait for vsync" : "rsx-present: flips at hsync (frame rate unlocked)");
 }
 
 void oot_ps3_screen_present(OotPs3Screen* screen) {

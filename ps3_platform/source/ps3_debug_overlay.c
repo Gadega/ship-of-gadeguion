@@ -40,8 +40,8 @@ unsigned long long oot_ps3_microseconds_now(void);
 unsigned int oot_ps3_heap_used_kb(void);
 int oot_ps3_trace_enabled(void);
 void oot_ps3_trace_set_enabled(int on);
-int oot_ps3_target_fps(void);
-void oot_ps3_set_target_fps(int fps);
+int oot_ps3_frame_mode(void);
+void oot_ps3_set_frame_mode(int mode);
 int oot_ps3_tnl_requested(void);
 void oot_ps3_tnl_set_requested(int on);
 int oot_ps3_rsx_overlay_upload(const uint8_t* rgba, uint32_t width, uint32_t height);
@@ -156,7 +156,27 @@ static void Rasterize(void) {
 }
 
 /* ---- pages ---- */
-enum { ITEM_HUD, ITEM_WARP, ITEM_TRACE, ITEM_FPS, ITEM_TNL, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
+enum { ITEM_HUD, ITEM_WARP, ITEM_TRACE, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
+
+/* Resolution: native by default, USRDIR/res720 forces 720p (rsx_screen.c, read at boot). */
+static int sRes720 = -1;
+static int Res720(void) {
+    if (sRes720 < 0) {
+        const int fd = open("/dev_hdd0/game/OOTP30048/USRDIR/res720", O_RDONLY);
+        sRes720 = fd >= 0;
+        if (fd >= 0) close(fd);
+    }
+    return sRes720;
+}
+static void SetRes720(int on) {
+    sRes720 = on;
+    if (on) {
+        const int fd = open("/dev_hdd0/game/OOTP30048/USRDIR/res720", O_WRONLY | O_CREAT, 0666);
+        if (fd >= 0) close(fd);
+    } else {
+        unlink("/dev_hdd0/game/OOTP30048/USRDIR/res720");
+    }
+}
 
 static void PerfLines(int row) {
     char info1[PANEL_COLS + 1], info2[PANEL_COLS + 1];
@@ -171,7 +191,8 @@ static void PerfLines(int row) {
 static void BuildMain(void) {
     static const char* const kLabels[ITEM_COUNT] = {
         "Performance HUD while playing", "Warp to area...", "Trace files (bug reports)", "Frame rate",
-        "GPU vertex path (experimental)", "Mark this moment in the trace", "Take screenshot", "Close menu",
+        "Resolution (after restart)", "GPU vertex path (experimental)", "Mark this moment in the trace",
+        "Take screenshot", "Close menu",
     };
     int i;
     Clear();
@@ -182,14 +203,20 @@ static void BuildMain(void) {
         switch (i) {
             case ITEM_HUD: snprintf(value, sizeof(value), "[%s]", sHud ? "ON" : "OFF"); break;
             case ITEM_TRACE: snprintf(value, sizeof(value), "[%s]", oot_ps3_trace_enabled() ? "ON" : "OFF"); break;
-            case ITEM_FPS: snprintf(value, sizeof(value), "[%d]", oot_ps3_target_fps()); break;
+            case ITEM_FPS: {
+                static const char* const kModes[3] = { "[60]", "[UNLOCKED]", "[20]" };
+                const int mode = oot_ps3_frame_mode();
+                snprintf(value, sizeof(value), "%s", kModes[mode >= 0 && mode < 3 ? mode : 0]);
+            } break;
+            case ITEM_RES: snprintf(value, sizeof(value), "[%s]", Res720() ? "720p" : "NATIVE"); break;
             case ITEM_TNL: snprintf(value, sizeof(value), "[%s]", oot_ps3_tnl_requested() ? "ON" : "OFF"); break;
             default: break;
         }
         Line(6 + i, i == sSel ? COL_SELECT : COL_TEXT, "%s %-40s %s", i == sSel ? ">" : " ", kLabels[i], value);
     }
     if (sSel == ITEM_TNL) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (GPU path: may draw 3D black; takes effect next frame)");
-    if (sSel == ITEM_FPS) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (20 = no frame interpolation)");
+    if (sSel == ITEM_FPS) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (unlocked: no vsync, may tear; 20: no interpolation)");
+    if (sSel == ITEM_RES) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (native = 1080p on a 1080p TV; restart the game to apply)");
     Line(PANEL_ROWS - 3, COL_WARN, "%s", sStatus);
     Line(PANEL_ROWS - 1, COL_DIM, "D-pad: move   X: select   O: back   R3: close");
 }
@@ -292,7 +319,12 @@ static void Activate(void) {
             SetStatus(oot_ps3_trace_enabled() ? "Trace files ON (saved in USRDIR)" : "Trace files OFF");
             break;
         case ITEM_FPS:
-            oot_ps3_set_target_fps(oot_ps3_target_fps() == 60 ? 20 : 60);
+            /* 60 -> unlocked -> 20 -> 60 */
+            oot_ps3_set_frame_mode(oot_ps3_frame_mode() == 0 ? 1 : oot_ps3_frame_mode() == 1 ? 2 : 0);
+            break;
+        case ITEM_RES:
+            SetRes720(!Res720());
+            SetStatus("Resolution saved: restart the game to apply");
             break;
         case ITEM_TNL:
             oot_ps3_tnl_set_requested(!oot_ps3_tnl_requested());

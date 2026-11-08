@@ -366,30 +366,44 @@ unsigned long long oot_ps3_microseconds_now(void);
 
 // 60 unless USRDIR/fps20 exists (then 20, no interpolation). Read once.
 void sysThreadYieldPs3(void); // ps3_early_entry.c (PS3 system headers stay out of here)
-static int sFps = 0;
-// Debug menu: 60 (frame interpolation) or 20, remembered with USRDIR/fps20.
-void oot_ps3_set_target_fps(int fps) {
-    sFps = fps == 20 ? 20 : 60;
-    if (sFps == 20) {
-        FILE* flag = fopen("/dev_hdd0/game/OOTP30048/USRDIR/fps20", "wb");
+// Frame mode (debug menu "Frame rate"): 0 = 60 fps locked to vsync (frame interpolation),
+// 1 = unlocked (interpolated frames as fast as they render, flips at hsync), 2 = 20 fps
+// (no interpolation). Remembered with USRDIR/fps_unlocked or USRDIR/fps20.
+static int sFrameMode = -1;
+static bool Ps3FileExists(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f == nullptr) return false;
+    fclose(f);
+    return true;
+}
+int oot_ps3_frame_mode(void) {
+    if (sFrameMode < 0) {
+        sFrameMode = Ps3FileExists("/dev_hdd0/game/OOTP30048/USRDIR/fps20")          ? 2
+                     : Ps3FileExists("/dev_hdd0/game/OOTP30048/USRDIR/fps_unlocked") ? 1
+                                                                                       : 0;
+        oot_ps3_early_trace(sFrameMode == 0   ? "graph: frame rate 60 (vsync, frame interpolation)"
+                            : sFrameMode == 1 ? "graph: frame rate unlocked (USRDIR/fps_unlocked)"
+                                              : "graph: frame rate 20, no interpolation (USRDIR/fps20)");
+    }
+    return sFrameMode;
+}
+void oot_ps3_set_frame_mode(int mode) {
+    sFrameMode = mode == 1 || mode == 2 ? mode : 0;
+    remove("/dev_hdd0/game/OOTP30048/USRDIR/fps20");
+    remove("/dev_hdd0/game/OOTP30048/USRDIR/fps_unlocked");
+    if (sFrameMode != 0) {
+        FILE* flag = fopen(sFrameMode == 2 ? "/dev_hdd0/game/OOTP30048/USRDIR/fps20"
+                                           : "/dev_hdd0/game/OOTP30048/USRDIR/fps_unlocked", "wb");
         if (flag != nullptr) fclose(flag);
-    } else {
-        remove("/dev_hdd0/game/OOTP30048/USRDIR/fps20");
     }
 }
 int oot_ps3_target_fps(void) {
-    if (sFps == 0) {
-        FILE* off = fopen("/dev_hdd0/game/OOTP30048/USRDIR/fps20", "rb");
-        sFps = off != nullptr ? 20 : 60;
-        if (off != nullptr) fclose(off);
-        oot_ps3_early_trace(sFps == 60 ? "graph: frame interpolation on (target 60 fps; USRDIR/fps20 turns it off)"
-                                       : "graph: frame interpolation off (USRDIR/fps20 present)");
-    }
-    return sFps;
+    return oot_ps3_frame_mode() == 2 ? 20 : 60;
 }
 void oot_ps3_poll_exit(void);
 void oot_ps3_watchdog_kick(void);
 unsigned int oot_ps3_vblank_count(void); // rsx_screen.c
+void oot_ps3_screen_set_vsync(int on);    // rsx_screen.c
 void oot_ps3_heap_check(int maxReports, int fromWatchdog); // ps3_heap_guard.c
 void oot_ps3_rsx_take_tnl_stats(unsigned int* tnlDraws, unsigned int* tnlVerts, unsigned int* cpuDraws,
                                 unsigned int* vpSwitches, unsigned int* constVec4, unsigned int* combHits,
@@ -468,6 +482,41 @@ void Graph_ProcessGfxCommands(Gfx* commands) {
             static unsigned int sReportTicks = 0, sReportDrawn = 0, sReportSkipped = 0, sReportResync = 0;
             static unsigned long long sReportRenderUs = 0, sReportWaitUs = 0, sReportMaxDrawUs = 0;
             const bool interpolating = oot_ps3_target_fps() >= 60 && FrameInterpolation_Ps3TakeRecorded() != 0;
+            const bool unlocked = oot_ps3_frame_mode() == 1;
+            {
+                static int sVsyncApplied = -1;
+                if (sVsyncApplied != (unlocked ? 0 : 1)) {
+                    sVsyncApplied = unlocked ? 0 : 1;
+                    oot_ps3_screen_set_vsync(sVsyncApplied);
+                }
+            }
+            if (unlocked && interpolating) {
+                // Unlocked: interpolated frames back to back, each at the time it starts
+                // (t = elapsed / 50 ms); the real frame (t = 1) ends the 50 ms game update,
+                // so the game logic keeps its 20 updates per second.
+                static unsigned long long sTickStart = 0, sAvgDrawUs = 15000;
+                unsigned long long now = oot_ps3_microseconds_now();
+                if (sTickStart == 0 || now > sTickStart + 100000ULL || now + 50000ULL < sTickStart) sTickStart = now;
+                sLastDrawUs[0] = sLastDrawUs[1] = sLastDrawUs[2] = 0;
+                sLastDrawn = sLastSkipped = 0;
+                for (int guard = 0; guard < 64; ++guard) {
+                    now = oot_ps3_microseconds_now();
+                    const unsigned long long elapsed = now > sTickStart ? now - sTickStart : 0;
+                    const bool last = elapsed + sAvgDrawUs >= 50000ULL || guard == 63;
+                    const float t = last ? 1.0f : static_cast<float>(elapsed) / 50000.0f;
+                    const int index = last ? 2 : (t * 3.0f >= 2.0f ? 2 : static_cast<int>(t * 3.0f));
+                    if (!oot_ps3_fast3d_render_commands_interp(commands, index, t, last ? 0 : 1)) break;
+                    oot_ps3_watchdog_kick();
+                    const unsigned long long spent = oot_ps3_microseconds_now() - now;
+                    sAvgDrawUs = (sAvgDrawUs * 7ULL + spent) / 8ULL;
+                    sLastDrawUs[last ? 2 : (sLastDrawn < 2 ? sLastDrawn : 1)] = spent;
+                    ++sLastDrawn;
+                    if (last) break;
+                }
+                sTickStart += 50000ULL;
+                oot_ps3_early_trace("gfx-process: completed");
+                return;
+            }
             unsigned int vNow = oot_ps3_pacing_vblank();
             if (!sSlotStarted || static_cast<int>(vNow - sSlotBase) > 3 || static_cast<int>(sSlotBase - vNow) > 6) {
                 if (sSlotStarted) ++sReportResync; // more than a whole update late (or clock jump)
