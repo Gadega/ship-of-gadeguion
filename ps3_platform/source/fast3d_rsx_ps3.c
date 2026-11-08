@@ -19,6 +19,12 @@ void oot_ps3_rsx_set_depth(int test, int write) {
 }
 /* N64 decal surfaces (paths/trails on grass, shadows) as in LUS's GL/D3D/Metal
  * backends: depth LEQUAL plus a -2 depth bias toward the camera. */
+/* The debug overlay restores these after drawing (Fast3D only re-sends them on change). */
+void oot_ps3_rsx_get_depth_state(int* test, int* write, int* decal) {
+    *test = sDepthTest;
+    *write = sDepthWrite;
+    *decal = sZmodeDecal;
+}
 void oot_ps3_rsx_set_decal(int decal) {
     sZmodeDecal = decal;
 }
@@ -381,7 +387,12 @@ static uint32_t Ps3GcmWrap(uint8_t mode) {
 enum { MAX_FB_TEXTURES = 8 };
 static GpuTexture sFbTextures[MAX_FB_TEXTURES];
 static GpuTexture textures[MAX_TEXTURES];
+/* The debug menu's text panel (ps3_debug_overlay.c): its own texture, outside the
+ * game's texture ids. */
+#define PS3_OVERLAY_TEXTURE_ID 0x4000U
+static GpuTexture sOverlayTexture;
 static GpuTexture* Ps3Texture(uint32_t id) {
+    if (id == PS3_OVERLAY_TEXTURE_ID) return &sOverlayTexture;
     if (id & PS3_FB_TEXTURE_BIT) {
         const uint32_t fb = id & 0xFFU;
         return fb < MAX_FB_TEXTURES && sFbTextures[fb].pixels ? &sFbTextures[fb] : &textures[MAX_TEXTURES - 1];
@@ -681,12 +692,32 @@ int oot_ps3_rsx_begin(uint32_t width, uint32_t height) {
     return 1;
 }
 
+static int Ps3UploadRgba(GpuTexture* t, const uint8_t* rgba, uint32_t width, uint32_t height);
 int oot_ps3_rsx_texture(uint32_t id, const uint8_t* rgba, uint32_t width, uint32_t height) {
-    GpuTexture* t;
-    uint32_t bytes;
     if (!prepared || !id || id > MAX_TEXTURES || !rgba || !width || !height ||
         width > 512 || height > 512) return 0;
-    t = &textures[id - 1];
+    return Ps3UploadRgba(&textures[id - 1], rgba, width, height);
+}
+
+/* Debug overlay: upload its RGBA panel (nearest filtering, clamped). */
+int oot_ps3_rsx_overlay_upload(const uint8_t* rgba, uint32_t width, uint32_t height) {
+    if (!prepared || !rgba || !width || !height || width > 512 || height > 512) return 0;
+    if (!Ps3UploadRgba(&sOverlayTexture, rgba, width, height)) return 0;
+    sOverlayTexture.linear = 0;
+    sOverlayTexture.wrapS = sOverlayTexture.wrapT = 2;
+    return 1;
+}
+
+/* Waits for the GPU and returns the frame drawn so far (debug-menu screenshot). */
+const uint32_t* oot_ps3_shipwright_video_target_pixels(uint32_t* width, uint32_t* height);
+const uint32_t* oot_ps3_rsx_capture_frame(uint32_t* width, uint32_t* height) {
+    if (!prepared || !ctx) return NULL;
+    gpu_wait();
+    return oot_ps3_shipwright_video_target_pixels(width, height);
+}
+
+static int Ps3UploadRgba(GpuTexture* t, const uint8_t* rgba, uint32_t width, uint32_t height) {
+    uint32_t bytes;
     bytes = width * height * 4;
     /* Overwrite in place only when no unfinished GPU work samples this texture;
      * otherwise upload into fresh memory and free the old copy after its fence. */

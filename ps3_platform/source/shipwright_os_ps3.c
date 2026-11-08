@@ -339,6 +339,8 @@ static s8 ScaleStick(u16 raw) {
     return (s8)value;
 }
 
+int oot_ps3_debug_input(unsigned int buttons); /* ps3_debug_overlay.c */
+
 static void FillPad(OSContPad* output, const padData* input) {
     output->button = 0;
     if (input->BTN_CROSS) output->button |= A_BUTTON;
@@ -360,6 +362,24 @@ static void FillPad(OSContPad* output, const padData* input) {
     output->right_stick_x = ScaleStick(input->ANA_R_H);
     output->right_stick_y = (s8)-ScaleStick(input->ANA_R_V);
     output->err_no = 0;
+    {
+        /* Debug menu (R3): while it is open the game gets no input. */
+        unsigned int dbg = 0;
+        if (input->BTN_R3) dbg |= 0x0001U;
+        if (input->BTN_UP) dbg |= 0x0002U;
+        if (input->BTN_DOWN) dbg |= 0x0004U;
+        if (input->BTN_LEFT) dbg |= 0x0008U;
+        if (input->BTN_RIGHT) dbg |= 0x0010U;
+        if (input->BTN_CROSS) dbg |= 0x0020U;
+        if (input->BTN_CIRCLE) dbg |= 0x0040U;
+        if (input->BTN_L1) dbg |= 0x0080U;
+        if (input->BTN_R1) dbg |= 0x0100U;
+        if (oot_ps3_debug_input(dbg)) {
+            output->button = 0;
+            output->stick_x = output->stick_y = 0;
+            output->right_stick_x = output->right_stick_y = 0;
+        }
+    }
 }
 
 int32_t osContInit(OSMesgQueue* queue, uint8_t* controllerBits, OSContStatus* status) {

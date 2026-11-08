@@ -451,6 +451,29 @@ static void OotPs3TraceReset(const char* message) {
     UsbTrace(message, 1);
 }
 
+/* Debug menu: trace files on/off while running, remembered with USRDIR/trace_on. */
+int oot_ps3_trace_enabled(void) {
+    return sTraceEnabled;
+}
+
+void oot_ps3_trace_set_enabled(int on) {
+    if (on && !sTraceEnabled) {
+        const int flag = open(OOT_PS3_TRACE_ON_PATH, O_WRONLY | O_CREAT, 0666);
+        if (flag >= 0) (void)close(flag);
+        sTraceEnabled = 1;
+        if (!sTraceAsyncOn) {
+            OotPs3TraceReset("trace: trace files enabled from the debug menu");
+            TraceAsyncStart();
+        }
+        oot_ps3_early_trace("trace: trace files on (debug menu)");
+    } else if (!on && sTraceEnabled) {
+        oot_ps3_early_trace("trace: trace files off (debug menu)");
+        oot_ps3_early_trace_flush_usb();
+        sTraceEnabled = 0;
+        (void)unlink(OOT_PS3_TRACE_ON_PATH);
+    }
+}
+
 int main(int argc, char* argv[]) {
     {
         const int flag = open(OOT_PS3_TRACE_ON_PATH, O_RDONLY);

@@ -22,6 +22,7 @@ extern "C" void oot_ps3_fast3d_add_run(unsigned long long us);
 extern "C" void oot_ps3_early_trace(const char*);
 extern "C" void oot_ps3_rsx_texture_sampler(uint32_t id, int linear, int wrapS, int wrapT);
 extern "C" int oot_ps3_rsx_copy_fb(int fb);
+extern "C" void oot_ps3_debug_overlay_frame(unsigned int screenWidth, unsigned int screenHeight);
 extern "C" int oot_ps3_rsx_set_target(int fb, uint32_t width, uint32_t height);
 extern "C" void oot_ps3_rsx_set_depth(int test, int write);
 extern "C" void oot_ps3_rsx_set_decal(int decal);
@@ -447,6 +448,7 @@ class Ps3Renderer final : public GfxRenderingAPI {
             snprintf(status, sizeof(status), "fast3d-rsx: upstream triangles=%u submitted=%u",
                      submitted_, valid_);
             oot_ps3_early_trace(status);
+            oot_ps3_debug_overlay_frame(displayWidth_, displayHeight_);
             oot_ps3_rsx_end();
             oot_ps3_shipwright_video_present_fast3d();
             oot_ps3_early_trace("fast3d-rsx: actual Shipwright frame presented");
@@ -728,8 +730,24 @@ static int Ps3FlagFile(const char* path) {
     fclose(f);
     return 1;
 }
+static int sTnlEnabled = -1;
+// Debug menu: the experimental GPU vertex path, remembered with USRDIR/tnl_on.
+extern "C" int oot_ps3_tnl_requested(void) {
+    if (sTnlEnabled < 0) sTnlEnabled = Ps3FlagFile("/dev_hdd0/game/OOTP30048/USRDIR/tnl_on") ? 1 : 0;
+    return sTnlEnabled;
+}
+extern "C" void oot_ps3_tnl_set_requested(int on) {
+    sTnlEnabled = on ? 1 : 0;
+    if (on) {
+        FILE* flag = fopen("/dev_hdd0/game/OOTP30048/USRDIR/tnl_on", "wb");
+        if (flag != nullptr) fclose(flag);
+    } else {
+        remove("/dev_hdd0/game/OOTP30048/USRDIR/tnl_on");
+    }
+    oot_ps3_early_trace(on ? "graph: Play GPU vertex pipeline on (debug menu)" : "graph: Play GPU vertex pipeline off (debug menu)");
+}
 extern "C" int oot_ps3_tnl_enabled(void) {
-    static int sEnabled = -1;
+    int& sEnabled = sTnlEnabled;
     if (sEnabled < 0) {
         sEnabled = Ps3FlagFile("/dev_hdd0/game/OOTP30048/USRDIR/tnl_on") ? 1 : 0;
         oot_ps3_early_trace(sEnabled ? "graph: Play GPU vertex pipeline on (USRDIR/tnl_on)"

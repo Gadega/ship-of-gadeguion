@@ -123,6 +123,12 @@ bash "$ROOT/scripts/build-fast3d-rsx-shaders.sh" >"$OUT/logs/fast3d-rsx-shaders.
     -c "$ROOT/ps3_platform/source/ps3_savedata.c" \
     -o "$OUT/objects/ps3_savedata.o" >"$OUT/logs/ps3-savedata.log" 2>&1 || {
     echo 'BLOCKED compiling PS3 save data'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/ps3-savedata.log"; exit 3; }
+# Debug menu overlay (R3); system headers only, no game headers.
+"${cc_run[@]}" -std=gnu11 -O2 -mcpu=cell -ffunction-sections -fdata-sections -Wall -Wextra -Werror \
+    "-I$PS3_SDK_ROOT/ppu/include" \
+    -c "$ROOT/ps3_platform/source/ps3_debug_overlay.c" \
+    -o "$OUT/objects/ps3_debug_overlay.o" >"$OUT/logs/ps3-debug-overlay.log" 2>&1 || {
+    echo 'BLOCKED compiling debug menu overlay'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/ps3-debug-overlay.log"; exit 3; }
 # SPU audio mixer: the SPU program (spu-gcc), embedded as a C array, and its PPU driver.
 SPU_GCC="${PS3_SDK_ROOT}/spu/bin/spu-gcc"
 [ -x "$SPU_GCC" ] || SPU_GCC="$(command -v spu-gcc || true)"
@@ -358,6 +364,10 @@ fi
     -o "$OUT/objects/game-en-mag.o" >"$OUT/logs/game-en-mag.log" 2>&1 || {
     echo 'BLOCKED compiling title logo actor'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/game-en-mag.log"; exit 3; }
 "${cc_run[@]}" "${game_main_flags[@]}" \
+    -c "$ROOT/ps3_platform/source/ps3_debug_game.c" \
+    -o "$OUT/objects/game-ps3-debug.o" >"$OUT/logs/game-ps3-debug.log" 2>&1 || {
+    echo 'BLOCKED compiling debug menu game helpers'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/game-ps3-debug.log"; exit 3; }
+"${cc_run[@]}" "${game_main_flags[@]}" \
     -c "$UPSTREAM/soh/src/code/z_kanfont.c" \
     -o "$OUT/objects/game-kanfont.o" >"$OUT/logs/game-kanfont.log" 2>&1 || {
     echo 'BLOCKED compiling font loader'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/game-kanfont.log"; exit 3; }
@@ -435,7 +445,7 @@ if ! OOT_PS3_FAST3D_OBJECT_MODE=1 bash "$ROOT/scripts/check-ps3-fast3d-interpret
 fi
 echo 'Fresh native Fast3D interpreter, PS3 O2R adapter, and renderer compiled'
 
-objects=("$OUT/objects/bootstrap.o" "$OUT/objects/vanilla.o" "$OUT/objects/rsx_screen.o" "$OUT/objects/fast3d_rsx_ps3.o" "$OUT/objects/ps3_process_param.o" "$OUT/objects/ps3_sbrk_fixed.o" "$OUT/objects/ps3_newlib_lock.o" "$OUT/objects/ps3_glob_fixed.o" "$OUT/objects/ps3_early_entry.o" "$OUT/objects/ps3_jpeg.o" "$OUT/objects/ps3_audio.o" "$OUT/objects/ps3_savedata.o" "$OUT/objects/ps3_heap_guard.o" "$OUT/objects/ps3_spu_audio.o" "$OUT/objects/shipwright_video.o" \
+objects=("$OUT/objects/bootstrap.o" "$OUT/objects/vanilla.o" "$OUT/objects/rsx_screen.o" "$OUT/objects/fast3d_rsx_ps3.o" "$OUT/objects/ps3_process_param.o" "$OUT/objects/ps3_sbrk_fixed.o" "$OUT/objects/ps3_newlib_lock.o" "$OUT/objects/ps3_glob_fixed.o" "$OUT/objects/ps3_early_entry.o" "$OUT/objects/ps3_jpeg.o" "$OUT/objects/ps3_audio.o" "$OUT/objects/ps3_savedata.o" "$OUT/objects/ps3_debug_overlay.o" "$OUT/objects/ps3_heap_guard.o" "$OUT/objects/ps3_spu_audio.o" "$OUT/objects/shipwright_video.o" \
     "$OUT/objects/software_renderer.o" "$OUT/objects/mixer.o")
 if ! "$LD_BIN" -r -o "$OUT/shipwright-native-bootstrap.o" "$BASE" "${objects[@]}" >"$OUT/logs/reloc-link.log" 2>&1; then
     echo 'BLOCKED: native bootstrap relocatable link failed'
@@ -577,6 +587,7 @@ final_objects+=(
     "$OUT/objects/game-bgcheck.o"
     "$OUT/objects/game-en-mag.o"
     "$OUT/objects/game-kanfont.o"
+    "$OUT/objects/game-ps3-debug.o"
     "$OUT/objects/game-effect-ss.o"
     "$OUT/objects/game-eff-kirakira.o"
     "$OUT/objects/game-fc-z-file-choose.o"

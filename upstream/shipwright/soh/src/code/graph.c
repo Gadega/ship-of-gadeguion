@@ -782,6 +782,12 @@ static void RunFrame() {
                         unsigned long long drawUs[3];
                         unsigned int drawn = 0, skipped = 0;
                         oot_ps3_last_update_draws(drawUs, &drawn, &skipped);
+                        {
+                            extern void oot_ps3_debug_note_update(unsigned long long logicUs,
+                                                                  const unsigned long long drawUs[3],
+                                                                  unsigned int drawn, unsigned int skipped);
+                            oot_ps3_debug_note_update(sPs3LastLogicUs, drawUs, drawn, skipped);
+                        }
                         const unsigned long long maxDrawUs =
                             drawUs[0] > drawUs[1] ? (drawUs[0] > drawUs[2] ? drawUs[0] : drawUs[2])
                                                   : (drawUs[1] > drawUs[2] ? drawUs[1] : drawUs[2]);

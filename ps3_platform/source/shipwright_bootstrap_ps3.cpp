@@ -366,8 +366,18 @@ unsigned long long oot_ps3_microseconds_now(void);
 
 // 60 unless USRDIR/fps20 exists (then 20, no interpolation). Read once.
 void sysThreadYieldPs3(void); // ps3_early_entry.c (PS3 system headers stay out of here)
+static int sFps = 0;
+// Debug menu: 60 (frame interpolation) or 20, remembered with USRDIR/fps20.
+void oot_ps3_set_target_fps(int fps) {
+    sFps = fps == 20 ? 20 : 60;
+    if (sFps == 20) {
+        FILE* flag = fopen("/dev_hdd0/game/OOTP30048/USRDIR/fps20", "wb");
+        if (flag != nullptr) fclose(flag);
+    } else {
+        remove("/dev_hdd0/game/OOTP30048/USRDIR/fps20");
+    }
+}
 int oot_ps3_target_fps(void) {
-    static int sFps = 0;
     if (sFps == 0) {
         FILE* off = fopen("/dev_hdd0/game/OOTP30048/USRDIR/fps20", "rb");
         sFps = off != nullptr ? 20 : 60;

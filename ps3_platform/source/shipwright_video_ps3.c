@@ -130,6 +130,14 @@ uint32_t oot_ps3_shipwright_video_rsx_offset(void) {
     return sReady ? sScreen.buffers[sScreen.current_buffer].offset : 0;
 }
 
+/* The frame being drawn (debug-menu screenshots). */
+const uint32_t* oot_ps3_shipwright_video_target_pixels(uint32_t* width, uint32_t* height) {
+    if (!sReady) return NULL;
+    *width = sScreen.buffers[sScreen.current_buffer].width;
+    *height = sScreen.buffers[sScreen.current_buffer].height;
+    return sScreen.buffers[sScreen.current_buffer].pixels;
+}
+
 void oot_ps3_shipwright_video_present_title_layout(const OotPs3TitleRect* rects, uint32_t count) {
     OotPs3DisplayBuffer* target;
     uint32_t i;
