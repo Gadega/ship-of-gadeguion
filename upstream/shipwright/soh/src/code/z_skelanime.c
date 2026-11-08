@@ -156,12 +156,8 @@ void SkelAnime_DrawFlexLimbLod(PlayState* play, s32 limbIndex, void** skeleton, 
         SKEL_PS3_TRACE("skel-draw: invalid limb index or cyclic traversal; stopped safely");
         return;
     }
-    {
-        char marker[80];
-        snprintf(marker, sizeof(marker), "skel-draw: enter limb=%d visit=%u", limbIndex,
-                 sPs3FlexLimbVisits);
-        SKEL_PS3_TRACE(marker);
-    }
+    /* No per-limb trace lines here: ~5 per limb for every flex skeleton drawn
+     * (Link, the Kokiri) were ~900 trace calls per update. */
 #endif
     Matrix_Push();
 
@@ -178,9 +174,7 @@ void SkelAnime_DrawFlexLimbLod(PlayState* play, s32 limbIndex, void** skeleton, 
 
     play->flexLimbOverrideMTX = mtx;
 
-    SKEL_PS3_TRACE("skel-draw: before limb override callback");
     if ((overrideLimbDraw == NULL) || !overrideLimbDraw(play, limbIndex, &newDList, &pos, &rot, arg)) {
-        SKEL_PS3_TRACE("skel-draw: limb override callback completed");
         Matrix_TranslateRotateZYX(&pos, &rot);
         if (newDList != NULL) {
             MATRIX_TOMTX(*mtx);
@@ -197,9 +191,7 @@ void SkelAnime_DrawFlexLimbLod(PlayState* play, s32 limbIndex, void** skeleton, 
         }
     }
     if (postLimbDraw != NULL) {
-        SKEL_PS3_TRACE("skel-draw: before limb post callback");
         postLimbDraw(play, limbIndex, &limbDList, &rot, arg);
-        SKEL_PS3_TRACE("skel-draw: limb post callback completed");
     }
     if (limb->child != LIMB_DONE) {
         SkelAnime_DrawFlexLimbLod(play, limb->child, skeleton, jointTable, overrideLimbDraw, postLimbDraw, arg, lod,

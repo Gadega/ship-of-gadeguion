@@ -683,7 +683,8 @@ bool Decode(Resource* resource, const std::vector<unsigned char>& file) {
         if (resource->version != 0 || !body.Can(2)) return false;
         const uint8_t limbType = body.U8();
         const uint8_t segmentType = body.U8();
-        if (limbType != 1 && limbType != 2 && limbType != 3) return false;
+        // 1 standard, 2 LOD, 3 skin, 4 curve (SkelCurve: the big treasure chest's lid)
+        if (limbType < 1 || limbType > 4) return false;
         std::string skinDisplayList;
         if (!body.SceneString(&skinDisplayList) || !body.Can(6)) return false;
         const uint16_t totalVertices = body.U16();
@@ -814,6 +815,16 @@ bool Decode(Resource* resource, const std::vector<unsigned char>& file) {
             limb.dList = display(displayList);
             resource->data.resize(sizeof(limb));
             std::memcpy(resource->data.data(), &limb, sizeof(limb));
+        } else if (limbType == 4) {
+            // SkeletonLimbFactory: a curve limb keeps only its child/sibling indices
+            // and its two display lists (no joint position).
+            SkelCurveLimb limb = {};
+            limb.firstChildIdx = childIndex;
+            limb.nextLimbIdx = siblingIndex;
+            limb.dList[0] = display(displayList);
+            limb.dList[1] = display(farDisplayList);
+            resource->data.resize(sizeof(limb));
+            std::memcpy(resource->data.data(), &limb, sizeof(limb));
         } else {
             LodLimb limb = {};
             limb.jointPos.x = x; limb.jointPos.y = y; limb.jointPos.z = z;
@@ -831,7 +842,8 @@ bool Decode(Resource* resource, const std::vector<unsigned char>& file) {
         const uint32_t limbCount = body.ReadU32(), dListCount = body.ReadU32();
         (void)body.U8(); // limb table type (may differ from limb type)
         const uint32_t tableCount = body.ReadU32();
-        if (skeletonType > 1 || (limbType != 1 && limbType != 2 && limbType != 3) ||
+        // 0 normal, 1 flex, 2 curve (curve skeletons use curve limbs, type 4)
+        if (skeletonType > 2 || limbType < 1 || limbType > 4 || (skeletonType == 2) != (limbType == 4) ||
             limbCount == 0 || limbCount > 64 || tableCount == 0 ||
             tableCount > 64 || dListCount > 64) return false;
         std::vector<std::string> paths;
@@ -848,6 +860,18 @@ bool Decode(Resource* resource, const std::vector<unsigned char>& file) {
             void* limb = ResourceGetDataByName(path.c_str());
             if (limb == nullptr) return false;
             limbs.push_back(limb);
+        }
+        if (skeletonType == 2) {
+            // SkeletonFactory (Curve): SkelCurveLimbList { limbs, limbCount }.
+            const size_t curveTableOffset = (sizeof(SkelCurveLimbList) + alignof(void*) - 1) & ~(alignof(void*) - 1);
+            resource->data.resize(curveTableOffset + limbs.size() * sizeof(void*));
+            std::memcpy(resource->data.data() + curveTableOffset, limbs.data(), limbs.size() * sizeof(void*));
+            SkelCurveLimbList list = {};
+            list.limbs = reinterpret_cast<SkelCurveLimb**>(resource->data.data() + curveTableOffset);
+            list.limbCount = static_cast<u8>(limbCount);
+            std::memcpy(resource->data.data(), &list, sizeof(list));
+            oot_ps3_early_trace("resource: native curve skeleton decoded");
+            return true;
         }
         const size_t tableOffset = (sizeof(FlexSkeletonHeader) + alignof(void*) - 1) & ~(alignof(void*) - 1);
         resource->data.resize(tableOffset + limbs.size() * sizeof(void*));
@@ -903,6 +927,48 @@ bool Decode(Resource* resource, const std::vector<unsigned char>& file) {
             animation.staticIndexMax = staticIndexMax;
             std::memcpy(bytes, &animation, sizeof(animation));
             oot_ps3_early_trace("resource: native horse normal animation decoded");
+            return true;
+        }
+        if (animationType == 2) {
+            // AnimationFactory (Curve): frame count (unused), u8 refIndex[], TransformData[]
+            // {u16, s16, s16, s16, f32}, s16 copyValues[] -> TransformUpdateIndex.
+            (void)body.U16();
+            if (!body.Can(4)) return false;
+            const uint32_t refCount = body.ReadU32();
+            if (refCount > 4096 || !body.Can(static_cast<size_t>(refCount) + 4)) return false;
+            std::vector<u8> refs(refCount);
+            for (u8& ref : refs) ref = body.U8();
+            const uint32_t knotCount = body.ReadU32();
+            if (knotCount > 4096 || !body.Can(static_cast<size_t>(knotCount) * 12 + 4)) return false;
+            std::vector<TransformData> knots(knotCount);
+            for (TransformData& knot : knots) {
+                knot.unk_00 = body.U16();
+                knot.unk_02 = static_cast<s16>(body.U16());
+                knot.unk_04 = static_cast<s16>(body.U16());
+                knot.unk_06 = static_cast<s16>(body.U16());
+                const uint32_t bits = body.ReadU32();
+                std::memcpy(&knot.unk_08, &bits, sizeof(bits));
+            }
+            const uint32_t copyCount = body.ReadU32();
+            if (copyCount > 4096 || !body.Can(static_cast<size_t>(copyCount) * 2)) return false;
+            std::vector<s16> copies(copyCount);
+            for (s16& copy : copies) copy = static_cast<s16>(body.U16());
+            if (body.Offset() != file.size()) return false;
+            auto aligned = [](size_t at, size_t align) { return (at + align - 1) & ~(align - 1); };
+            const size_t refsOffset = sizeof(TransformUpdateIndex);
+            const size_t knotsOffset = aligned(refsOffset + refs.size(), alignof(TransformData));
+            const size_t copiesOffset = aligned(knotsOffset + knots.size() * sizeof(TransformData), alignof(s16));
+            resource->data.resize(copiesOffset + copies.size() * sizeof(s16));
+            auto* bytes = resource->data.data();
+            if (!refs.empty()) std::memcpy(bytes + refsOffset, refs.data(), refs.size());
+            if (!knots.empty()) std::memcpy(bytes + knotsOffset, knots.data(), knots.size() * sizeof(TransformData));
+            if (!copies.empty()) std::memcpy(bytes + copiesOffset, copies.data(), copies.size() * sizeof(s16));
+            TransformUpdateIndex index = {};
+            index.refIndex = bytes + refsOffset;
+            index.transformData = reinterpret_cast<TransformData*>(bytes + knotsOffset);
+            index.copyValues = reinterpret_cast<s16*>(bytes + copiesOffset);
+            std::memcpy(bytes, &index, sizeof(index));
+            oot_ps3_early_trace("resource: native curve animation decoded");
             return true;
         }
         if (animationType != 1) return false;

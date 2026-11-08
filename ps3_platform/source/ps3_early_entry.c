@@ -304,8 +304,13 @@ void oot_ps3_early_trace(const char* message) {
     if (message == 0 || strncmp(message, "graph: Play audio-", 18) != 0) {
         ++sPs3TraceCount;
         if (message != 0) {
-            strncpy(sPs3LastTrace, message, sizeof(sPs3LastTrace) - 1);
-            sPs3LastTrace[sizeof(sPs3LastTrace) - 1] = '\0';
+            /* Copy only the message (strncpy zero-filled the whole buffer on each of the
+             * ~1000 calls per update). Kept even with trace files off: the watchdog's
+             * "stopped at" step. */
+            unsigned int n = 0;
+            while (n < sizeof(sPs3LastTrace) - 1 && message[n] != '\0') ++n;
+            memcpy(sPs3LastTrace, message, n);
+            sPs3LastTrace[n] = '\0';
         }
     }
     /* Per-actor spawn ladders (~28 lines per actor) made scene loads with many
