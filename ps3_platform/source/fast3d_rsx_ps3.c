@@ -701,7 +701,7 @@ static void Ps3SelfTestClear(void) {
  * TEX0 (2 floats) and COLOR0 like the GPU path (the rest switched off with size 0).
  * indexDraw: rsxDrawIndexArray (CPU path) or rsxDrawVertexArray (GPU path). */
 static void Ps3RawTestDraw(rsxVertexProgram* prog, void* code, const float pos[3][4], int fullBinding,
-                           int indexDraw, const float* uniform0) {
+                           int indexDraw, const float* uniforms, uint32_t uniformFirst, uint32_t uniformCount) {
     GpuTexture* white = &textures[MAX_TEXTURES - 1];
     float* dst = vertices[frameIndex];
     uint32_t offset, i, a;
@@ -712,12 +712,14 @@ static void Ps3RawTestDraw(rsxVertexProgram* prog, void* code, const float pos[3
         vtx[24] = vtx[25] = vtx[26] = vtx[27] = 1.0f; /* TEXCOORD5 = k4 = white */
         vtx[32] = vtx[33] = vtx[34] = vtx[35] = 1.0f; /* COLOR0 */
         vtx[36] = vtx[37] = vtx[38] = vtx[39] = 1.0f; /* COLOR1 */
-        vtx[40] = 0.5f; /* TEXCOORD7 = (0.5, 1): z/w source for the split-write test */
-        vtx[41] = 1.0f;
+        vtx[40] = 0.5f; /* TEXCOORD7 = (0.5, 1, 40): z/w source for the split-write test, */
+        vtx[41] = 1.0f; /* .z = matrix row index for the relative-addressing test */
+        vtx[42] = 40.0f;
         memcpy(dst + i * VERTEX_FLOATS, vtx, sizeof(vtx));
     }
     rsxLoadVertexProgram(ctx, prog, code);
-    if (uniform0 != NULL) rsxLoadVertexProgramParameterBlock(ctx, prog->const_start, 1, uniform0);
+    if (uniforms != NULL)
+        rsxLoadVertexProgramParameterBlock(ctx, prog->const_start + uniformFirst, uniformCount, uniforms);
     rsxLoadFragmentProgramLocation(ctx, fpGeneric, fpGenericOffset, GCM_LOCATION_RSX);
     for (i = 0; i < 2; ++i) {
         rsxTextureControl(ctx, i, GCM_TRUE, 0, 0, GCM_TEXTURE_MAX_ANISO_1);
@@ -763,22 +765,32 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
     static const float kRaw[3][4] = { { -1024.0f, -1024.0f, 0.0f, 40.0f }, { 1024.0f, -1024.0f, 0.0f, 40.0f },
                                       { 0.0f, 1024.0f, 0.0f, 40.0f } };
     static const char* const kNames[8] = {
-        "CPU path (control)", "pass-through program (reads 11 inputs)", "A: no COLOR0/COLOR1 reads (in 0xff01)",
-        "B: only POSITION+COLOR0+COLOR1 (in 0x0019)", "C: only POSITION (in 0x0001)",
-        "D: POSITION+TEXCOORD7 (in 0x8001)", "attr probe (reference, in 0x0001)", "T1 (reference, in 0xdf19)",
+        "CPU path (control)", "pass-through program", "E: position z,w from constants",
+        "F: position = uploaded matrix, relative addressing (A0)", "G: position = uploaded matrix, fixed addresses",
+        "attr probe (reference, fails)", "C: position only (reference, passes)",
+        "T&L draw path, float records",
     };
-    const unsigned char* const kBlobs[6] = { oot_ps3_rsx_vpo_selftest5, oot_ps3_rsx_vpo_selftest6,
-                                             oot_ps3_rsx_vpo_selftest7, oot_ps3_rsx_vpo_selftest8,
-                                             oot_ps3_rsx_vpo_tnl_attrprobe, oot_ps3_rsx_vpo_selftest1 };
-    rsxVertexProgram* tp[6];
-    void* tc[6];
+    static const float kIdentity[4][4] = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 } };
+    const unsigned char* const kBlobs[5] = { oot_ps3_rsx_vpo_selftest9, oot_ps3_rsx_vpo_selftest10,
+                                             oot_ps3_rsx_vpo_selftest11, oot_ps3_rsx_vpo_tnl_attrprobe,
+                                             oot_ps3_rsx_vpo_selftest7 };
+    static float sConsts[64 * 4];
+    rsxVertexProgram* tp[5];
+    void* tc[5];
     uint32_t bytes, results[8];
     char line[200];
     int v, used;
-    for (v = 0; v < 6; ++v) {
+    for (v = 0; v < 5; ++v) {
         tp[v] = (rsxVertexProgram*)kBlobs[v];
         rsxVertexProgramGetUCode(tp[v], &tc[v], &bytes);
     }
+    /* T&L draw path constants: clip = (x/2048, y/2048, 0.5, 1), no lighting/fog, k4 = white. */
+    memset(sConsts, 0, sizeof(sConsts));
+    sConsts[24 * 4 + 0] = sConsts[24 * 4 + 1] = sConsts[24 * 4 + 2] = sConsts[24 * 4 + 3] = 1.0f;
+    sConsts[40 * 4 + 0] = 1.0f / 2048.0f;
+    sConsts[41 * 4 + 1] = 1.0f / 2048.0f;
+    sConsts[43 * 4 + 2] = 0.5f;
+    sConsts[43 * 4 + 3] = 1.0f;
     for (v = 0; v < 8; ++v) {
         Ps3SelfTestClear();
         rsxSetDepthTestEnable(ctx, GCM_FALSE);
@@ -798,9 +810,33 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
             oot_ps3_rsx_set_draw_state(4U, 0xFFFFU, 0xFFFFU, 6U, 4U, 0.0f, packs);
             oot_ps3_rsx_triangles(&vbo[0][0], 6U, 1U, 0U, 0U, 0, 0U, 0);
         } else if (v == 1) {
-            Ps3RawTestDraw(vp, vpCode, kClip, 1, 1, NULL);
+            Ps3RawTestDraw(vp, vpCode, kClip, 1, 1, NULL, 0, 0);
+        } else if (v == 2) {
+            Ps3RawTestDraw(tp[0], tc[0], kClip, 1, 1, NULL, 0, 0);
+        } else if (v == 3) {
+            Ps3RawTestDraw(tp[1], tc[1], kClip, 1, 1, &kIdentity[0][0], 40, 4); /* rows at 40..43 only */
+        } else if (v == 4) {
+            Ps3RawTestDraw(tp[2], tc[2], kClip, 1, 1, &kIdentity[0][0], 0, 4); /* compiled to c[0..3] */
+        } else if (v == 5) {
+            Ps3RawTestDraw(tp[3], tc[3], kRaw, 1, 1, NULL, 0, 0);
+        } else if (v == 6) {
+            Ps3RawTestDraw(tp[4], tc[4], kClip, 1, 1, NULL, 0, 0);
         } else {
-            Ps3RawTestDraw(tp[v - 2], tc[v - 2], v == 6 ? kRaw : kClip, 1, 1, NULL);
+            static const int16_t kTri[3][2] = { { -1024, -1024 }, { 1024, -1024 }, { 0, 1024 } };
+            uint8_t records[3 * 16];
+            int i;
+            for (i = 0; i < 3; ++i) {
+                uint8_t* r = records + i * 16;
+                const int16_t ob[3] = { kTri[i][0], kTri[i][1], 0 };
+                const uint16_t slot = 40, tcz[2] = { 0, 0 };
+                memcpy(r, ob, 6);
+                memcpy(r + 6, &slot, 2);
+                memcpy(r + 8, tcz, 4);
+                r[12] = r[13] = r[14] = r[15] = 255;
+            }
+            sTnlDebugMode = 1;
+            sCurrentVp = -1;
+            oot_ps3_rsx_tnl_draw(records, 3U, sConsts, 1, 40U, 55U, 0U, 0U, 0, 0, 0, 1);
         }
         results[v] = Ps3SelfTestPixel(width, height);
         tnlCursor = 0;

@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// GPU self-test program (fast3d_rsx_ps3.c Ps3TnlSelfTest): pass-through program except the
+// position. G: the same matrix rows at fixed constant addresses C[40..43].
+void main(float4 position : POSITION, float4 uv : TEXCOORD0,
+          float4 k0 : TEXCOORD1, float4 k1 : TEXCOORD2, float4 k2 : TEXCOORD3,
+          float4 k3 : TEXCOORD4, float4 k4 : TEXCOORD5, float4 state : TEXCOORD6,
+          float4 input3 : TEXCOORD7, float4 input1 : COLOR0, float4 input2 : COLOR1,
+          uniform float4 C[64],
+          out float4 outPosition : POSITION, out float4 outUv : TEXCOORD0,
+          out float4 outK0 : TEXCOORD1, out float4 outK1 : TEXCOORD2, out float4 outK2 : TEXCOORD3,
+          out float4 outK3 : TEXCOORD4, out float4 outK4 : TEXCOORD5, out float4 outState : TEXCOORD6,
+          out float4 outInput3 : TEXCOORD7, out float4 outInput1 : COLOR0, out float4 outInput2 : COLOR1) {
+    outPosition = position.x * C[40] + position.y * C[41] + position.z * C[42] + C[43];
+    outUv = uv;
+    outK0 = k0; outK1 = k1; outK2 = k2; outK3 = k3; outK4 = k4;
+    outState = state;
+    outInput3 = input3;
+    outInput1 = input1;
+    outInput2 = input2;
+}
