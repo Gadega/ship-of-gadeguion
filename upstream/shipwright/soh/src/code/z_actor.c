@@ -29,6 +29,7 @@ extern void oot_ps3_early_trace(const char* message);
 extern unsigned long long oot_ps3_microseconds_now(void);
 // Per-actor-id update time, read and cleared by the Play profiler in z_play.c.
 unsigned long long gPs3ActorUpdateUs[ACTOR_ID_MAX];
+unsigned long long gPs3ActorDrawUs[ACTOR_ID_MAX];
 #define ACTOR_PS3_TRACE(message) oot_ps3_early_trace(message)
 #else
 #define ACTOR_PS3_TRACE(message) ((void)0)
@@ -58,9 +59,7 @@ static s32 Ps3ActorVisit(const char* where, s32 category, Actor* actor, s32* vis
         }
         return 0;
     }
-    snprintf(line, sizeof(line), "%s: visit cat=%d id=%04x ptr=%p next=%p", where, (int)category,
-             (unsigned)(u16)actor->id, (void*)actor, (void*)actor->next);
-    oot_ps3_early_trace(line);
+    /* No per-actor "visit" line: formatting ~180 of them per update cost ~2 ms. */
     return 1;
 }
 #endif
@@ -3291,18 +3290,14 @@ void Actor_DrawAll(PlayState* play, ActorContext* actorCtx) {
                             if (actor->id == ACTOR_PLAYER) ACTOR_PS3_TRACE("actor-draw-all: before player Actor_Draw");
 #ifdef __PS3__
                             {
-                                extern void oot_ps3_early_trace(const char* message);
-                                static const char ps3Hex[] = "0123456789abcdef";
-                                char ps3Before[] = "actor-draw: id=0000 before draw";
-                                char ps3After[] = "actor-draw: id=0000 after draw";
-                                unsigned int ps3Id = (unsigned int)(unsigned short)actor->id;
-                                ps3Before[15] = ps3After[15] = ps3Hex[(ps3Id >> 12) & 0xF];
-                                ps3Before[16] = ps3After[16] = ps3Hex[(ps3Id >> 8) & 0xF];
-                                ps3Before[17] = ps3After[17] = ps3Hex[(ps3Id >> 4) & 0xF];
-                                ps3Before[18] = ps3After[18] = ps3Hex[ps3Id & 0xF];
-                                oot_ps3_early_trace(ps3Before);
+                                /* Draw time per actor type (z_play.c drawprof line); no per-actor
+                                 * trace lines here (two per actor per update were a measurable cost). */
+                                const s16 ps3ActorId = actor->id;
+                                const unsigned long long ps3T0 = oot_ps3_microseconds_now();
                                 Actor_Draw(play, actor);
-                                oot_ps3_early_trace(ps3After);
+                                if (ps3ActorId >= 0 && ps3ActorId < ACTOR_ID_MAX) {
+                                    gPs3ActorDrawUs[ps3ActorId] += oot_ps3_microseconds_now() - ps3T0;
+                                }
                             }
 #else
                             Actor_Draw(play, actor);

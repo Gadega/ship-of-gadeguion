@@ -774,16 +774,19 @@ static void RunFrame() {
                              resourceUs, resourceHits, resourceMisses);
                     GraphPs3Trace(playFrameTrace);
                     {
-                        // Per-update spike: an in-between frame was skipped or the update ran
-                        // over its 50 ms (3 vblanks at 60 fps). One line per such update.
+                        // Per-update hitch: two frames skipped, a draw over 25 ms or logic over
+                        // 20 ms (the steady overrun is in the fps/drawprof lines). One line each.
                         extern void oot_ps3_last_update_draws(unsigned long long drawUs[3], unsigned int* drawn,
                                                               unsigned int* skipped);
                         static unsigned int sSpikeLines = 0;
                         unsigned long long drawUs[3];
                         unsigned int drawn = 0, skipped = 0;
                         oot_ps3_last_update_draws(drawUs, &drawn, &skipped);
-                        if ((skipped != 0 || sPs3LastLogicUs + sPs3LastGfxUs > 52000ULL) && sSpikeLines < 2000U &&
-                            completedFrames > 1U) {
+                        const unsigned long long maxDrawUs =
+                            drawUs[0] > drawUs[1] ? (drawUs[0] > drawUs[2] ? drawUs[0] : drawUs[2])
+                                                  : (drawUs[1] > drawUs[2] ? drawUs[1] : drawUs[2]);
+                        if ((skipped >= 2U || maxDrawUs > 25000ULL || sPs3LastLogicUs > 20000ULL) &&
+                            sSpikeLines < 1000U && completedFrames > 1U) {
                             ++sSpikeLines;
                             snprintf(playFrameTrace, sizeof(playFrameTrace),
                                      "graph: Play spike scene=%d cs=%d logic=%llu draws=%u skipped=%u "

@@ -370,12 +370,22 @@ static void Play_Ps3ApplySceneLighting(PlayState* play);
 // Play_Update profiler: microseconds per section, reported every 64 updates.
 extern unsigned long long oot_ps3_microseconds_now(void);
 extern unsigned long long gPs3ActorUpdateUs[ACTOR_ID_MAX];
+extern unsigned long long gPs3ActorDrawUs[ACTOR_ID_MAX];
+extern unsigned int oot_ps3_trace_count(void);
 static unsigned long long sPs3Prof[8];
+/* Play_Main split: 0 Play_Update, 1 Play_Draw, 2 rooms + scene, 3 Actor_DrawAll. */
+static unsigned long long sPs3DrawProf[4];
 #define PS3_PROF(slot, stmt)                                                   \
     do {                                                                       \
         const unsigned long long ps3ProfT0 = oot_ps3_microseconds_now();       \
         stmt;                                                                  \
         sPs3Prof[slot] += oot_ps3_microseconds_now() - ps3ProfT0;              \
+    } while (0)
+#define PS3_DPROF(slot, stmt)                                                  \
+    do {                                                                       \
+        const unsigned long long ps3ProfT0 = oot_ps3_microseconds_now();       \
+        stmt;                                                                  \
+        sPs3DrawProf[slot] += oot_ps3_microseconds_now() - ps3ProfT0;          \
     } while (0)
 static void Play_Ps3ProfileReport(void) {
     static u32 sFrames = 0;
@@ -402,6 +412,31 @@ static void Play_Ps3ProfileReport(void) {
     oot_ps3_early_trace(line);
     memset(sPs3Prof, 0, sizeof(sPs3Prof));
     memset(gPs3ActorUpdateUs, 0, sizeof(unsigned long long) * ACTOR_ID_MAX);
+    {
+        static unsigned int sLastTraceCount = 0;
+        const unsigned int traceCount = oot_ps3_trace_count();
+        top[0] = top[1] = top[2] = -1;
+        for (i = 0; i < ACTOR_ID_MAX; i++) {
+            for (k = 0; k < 3; k++) {
+                if (top[k] < 0 || gPs3ActorDrawUs[i] > gPs3ActorDrawUs[top[k]]) {
+                    s32 m;
+                    for (m = 2; m > k; m--) top[m] = top[m - 1];
+                    top[k] = i;
+                    break;
+                }
+            }
+        }
+        snprintf(line, sizeof(line),
+                 "graph: Play drawprof/64 update=%llu draw=%llu rooms=%llu actorsDraw=%llu us top %04x=%llu "
+                 "%04x=%llu %04x=%llu traceCalls=%u",
+                 sPs3DrawProf[0], sPs3DrawProf[1], sPs3DrawProf[2], sPs3DrawProf[3], (unsigned)top[0],
+                 gPs3ActorDrawUs[top[0]], (unsigned)top[1], gPs3ActorDrawUs[top[1]], (unsigned)top[2],
+                 gPs3ActorDrawUs[top[2]], traceCount - sLastTraceCount);
+        oot_ps3_early_trace(line);
+        sLastTraceCount = oot_ps3_trace_count();
+        memset(sPs3DrawProf, 0, sizeof(sPs3DrawProf));
+        memset(gPs3ActorDrawUs, 0, sizeof(unsigned long long) * ACTOR_ID_MAX);
+    }
 }
 // The Hyrule Field title intro uses the PS3 title stub (shipwright_vanilla_ps3.cpp);
 // the other title demo scenes (Spirit Temple, Death Mountain Crater, cutscene map)
@@ -2045,10 +2080,14 @@ void Play_Draw(PlayState* play) {
 #endif
                 {
                     PLAY_PS3_TRACE("play-draw: before Scene_Draw");
-                    Scene_Draw(play);
-                    PLAY_PS3_TRACE("play-draw: after Scene_Draw; before Room_Draw");
-                    Room_Draw(play, &play->roomCtx.curRoom, roomDrawFlags & 3);
-                    Room_Draw(play, &play->roomCtx.prevRoom, roomDrawFlags & 3);
+                    {
+                        const unsigned long long ps3T0 = oot_ps3_microseconds_now();
+                        Scene_Draw(play);
+                        PLAY_PS3_TRACE("play-draw: after Scene_Draw; before Room_Draw");
+                        Room_Draw(play, &play->roomCtx.curRoom, roomDrawFlags & 3);
+                        Room_Draw(play, &play->roomCtx.prevRoom, roomDrawFlags & 3);
+                        sPs3DrawProf[2] += oot_ps3_microseconds_now() - ps3T0;
+                    }
                 }
             }
         }
@@ -2073,7 +2112,7 @@ void Play_Draw(PlayState* play) {
 
         if ((HREG(80) != 10) || (HREG(85) != 0)) {
             PLAY_PS3_TRACE("play-draw: before Actor_DrawAll");
-            Actor_DrawAll(play, &play->actorCtx);
+            PS3_DPROF(3, Actor_DrawAll(play, &play->actorCtx));
             PLAY_PS3_TRACE("play-draw: after Actor_DrawAll");
         }
 
@@ -2259,7 +2298,11 @@ void Play_Main(GameState* thisx) {
 
     if ((HREG(80) != 10) || (HREG(81) != 0)) {
         PLAY_PS3_TRACE("play-main: before Play_Update");
+#ifdef __PS3__
+        PS3_DPROF(0, Play_Update(play));
+#else
         Play_Update(play);
+#endif
         PLAY_PS3_TRACE("play-main: after Play_Update");
     }
 
@@ -2268,7 +2311,11 @@ void Play_Main(GameState* thisx) {
     PLAY_PS3_TRACE("play-main: before frame interpolation");
     FrameInterpolation_StartRecord();
     PLAY_PS3_TRACE("play-main: before Play_Draw");
+#ifdef __PS3__
+    PS3_DPROF(1, Play_Draw(play));
+#else
     Play_Draw(play);
+#endif
     PLAY_PS3_TRACE("play-main: after Play_Draw");
     FrameInterpolation_StopRecord();
 
