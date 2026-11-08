@@ -1,0 +1,31 @@
+#pragma once
+namespace std {
+template <typename T>
+class shared_future;
+
+template <typename T>
+class future {
+  public:
+    future() = default;
+    T get() { return T(); }
+    bool valid() const { return false; }
+    shared_future<T> share() { return shared_future<T>(); }
+};
+
+template <typename T>
+class promise {
+  public:
+    promise() = default;
+    void set_value(const T&) {}
+    void set_value(T&&) {}
+    future<T> get_future() { return future<T>(); }
+};
+
+template <typename T>
+class shared_future {
+  public:
+    shared_future() = default;
+    T get() const { return T(); }
+    bool valid() const { return false; }
+};
+} // namespace std

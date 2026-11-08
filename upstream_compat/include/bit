@@ -1,0 +1,18 @@
+#pragma once
+#include <stdint.h>
+#if defined(__has_include_next)
+#if __has_include_next(<bit>)
+#include_next <bit>
+#endif
+#endif
+namespace std {
+#ifndef __cpp_lib_bit_cast
+template <typename To, typename From> To bit_cast(const From& from) {
+    union {
+        From in;
+        To out;
+    } u = { from };
+    return u.out;
+}
+#endif
+} // namespace std

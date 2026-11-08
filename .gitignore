@@ -1,0 +1,39 @@
+# Only the source tree is tracked; everything else at the top level is build
+# output or local history (allow-list).
+/*
+!/.gitignore
+!/README.md
+!/COPYING
+!/docs/
+!/ps3_platform/
+!/ps3_compat/
+!/scripts/
+!/shipwright_probe/
+!/third_party/
+!/tools/
+!/upstream/
+!/upstream_compat/
+
+# Backups and caches anywhere
+*.bak*
+__pycache__/
+*.pyc
+
+# Never commit game data or builds
+*.o2r
+*.otr
+*.z64
+*.n64
+*.v64
+*.pkg
+*.self
+*.elf
+*.o
+*.sav
+EBOOT.BIN
+
+# Packager build products (payload/EBOOT.BIN comes from a port build)
+/tools/packager/.venv/
+/tools/packager/build/
+/tools/packager/dist/
+/tools/packager/*.spec

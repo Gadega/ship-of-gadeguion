@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// N64 combiner as a linear form over the texture samples; coefficients are
+// computed per vertex on the CPU, so each pixel needs only a few multiply-adds.
+float flagBit(float flags, float v) { return fmod(floor(floor(flags + 0.5) / v), 2.0); }
+
+void main(float4 uv : TEXCOORD0,
+          float4 k0 : TEXCOORD1, float4 k1 : TEXCOORD2, float4 k2 : TEXCOORD3,
+          float4 k3 : TEXCOORD4, float4 k4 : TEXCOORD5, float4 state : TEXCOORD6,
+          float4 input3 : TEXCOORD7, float4 input1 : COLOR0, float4 input2 : COLOR1,
+          uniform sampler2D image : TEXUNIT0, uniform sampler2D image1 : TEXUNIT1,
+          out float4 outColor : COLOR) {
+    float4 tex0 = tex2D(image, uv.xy);
+    float4 tex1 = tex2D(image1, uv.zw);
+
+    float3 color = saturate(k0.rgb * tex0.rgb + k1.rgb * tex0.aaa + k2.rgb * tex1.rgb +
+                            k3.rgb * tex1.aaa + k4.rgb);
+    float alpha = saturate(k0.w * tex0.a + k1.w * tex1.a + k2.w);
+    alpha = lerp(1.0, alpha, flagBit(state.y, 2.0));
+
+    // Title materials (unchanged special path for the N64 logo and lettering).
+    float3 logoFirst = saturate((tex0.rgb - input1.rgb) * input2.rgb + tex0.rgb);
+    float3 textFirst = saturate((tex1.rgb - input1.rgb) * input2.rgb + tex0.rgb);
+    float3 logo = saturate((input1.rgb - input3.rgb) * logoFirst + input3.rgb);
+    float3 lettering = saturate((input1.rgb - input3.rgb) * textFirst + input3.rgb);
+    float logoWeight = saturate(1.0 - abs(state.x - 1.0));
+    float textWeight = saturate(1.0 - abs(state.x - 2.0));
+    float genericWeight = 1.0 - logoWeight - textWeight;
+
+    float edge = flagBit(state.y, 8.0);
+    clip(genericWeight * edge > 0.5 ? alpha - 0.19 : 1.0);
+    alpha = lerp(alpha, 1.0, edge);
+    float threshold = flagBit(state.y, 16.0);
+    clip(genericWeight * threshold > 0.5 ? alpha - 0.03125 : 1.0);
+
+    outColor.rgb = color * genericWeight + logo * logoWeight + lettering * textWeight;
+    outColor.a = alpha * genericWeight + logoWeight + tex0.a * input1.a * textWeight;
+}

@@ -1,0 +1,16 @@
+#pragma once
+namespace std {
+class thread {
+  public:
+    thread() = default;
+    template <typename Fn, typename... Args> explicit thread(Fn&&, Args&&...) {}
+    static unsigned int hardware_concurrency() { return 1; }
+    bool joinable() const { return false; }
+    void join() {}
+    void detach() {}
+};
+namespace this_thread {
+template <typename Rep, typename Period> void sleep_for(const Rep&, const Period&) {}
+inline void yield() {}
+} // namespace this_thread
+} // namespace std

@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Receives raw Shipwright Fast3D vertices and evaluates the N64 colour combiner here,
+// on the RSX: the per-vertex linear form over the texture samples
+//   rgb   = k0*tex0.rgb + k1*tex0.aaa + k2*tex1.rgb + k3*tex1.aaa + k4
+//   alpha = k0.w*tex0.a + k1.w*tex1.a + k2.w
+// Same rules as the former CPU code in fast3d_rsx_ps3.c (Ps3RgbCycle/Ps3AlphaCycle),
+// which cost ~3.6 ms of PPU time per drawn frame. Fragment programs are unchanged.
+// (No structs: the Linux cgcomp crashes on struct-returning functions.)
+//
+// Attributes (36 floats per vertex):
+//   POSITION  clip-space position
+//   TEXCOORD0 uv0.xy, uv1.xy
+//   TEXCOORD1..3 combiner inputs 1..3 (rgba; 1.0 when the draw has fewer inputs)
+//   TEXCOORD4 fog colour rgb + fog factor (factor 0 = no fog)
+//   TEXCOORD5 combiner codes: packs for cycle0 rgb, cycle0 alpha, cycle1 rgb, cycle1 alpha
+//             (4 nibbles each: A = bits 0-3, B = 4-7, C = 8-11, D = 12-15)
+//   TEXCOORD6 two-cycle flag, material, packed flags, 0
+//   TEXCOORD7 lean-program state: alpha used, texture edge, alpha threshold, 0
+
+float nibble(float pack, float scale) {
+    return fmod(floor(pack / scale), 16.0);
+}
+
+float isCode(float code, float value) {
+    return abs(code - value) < 0.5 ? 1.0 : 0.0;
+}
+
+// One rgb operand as a form: basis weights (tex0.rgb, tex0.aaa, tex1.rgb, tex1.aaa) per
+// channel in b0..b3, constant term in b4. comb* = the previous cycle's form (code 13).
+void rgbOperand(float code, float3 i1, float3 i2, float3 i3,
+                float3 c0, float3 c1, float3 c2, float3 c3, float3 c4, float hasComb,
+                out float3 b0, out float3 b1, out float3 b2, out float3 b3, out float3 b4) {
+    float c = isCode(code, 13.0) * hasComb;
+    b0 = float3(isCode(code, 8.0)) + c0 * c;
+    b1 = float3(isCode(code, 9.0)) + c1 * c;
+    b2 = float3(isCode(code, 10.0)) + c2 * c;
+    b3 = float3(isCode(code, 11.0)) + c3 * c;
+    b4 = i1 * isCode(code, 1.0) + i2 * isCode(code, 2.0) + i3 * isCode(code, 3.0) +
+         float3(isCode(code, 12.0) + 0.5 * isCode(code, 14.0)) + c4 * c;
+}
+
+float anyBasis(float3 b0, float3 b1, float3 b2, float3 b3) {
+    float3 s = abs(b0) + abs(b1) + abs(b2) + abs(b3);
+    return (s.x + s.y + s.z) > 0.0 ? 1.0 : 0.0;
+}
+
+void rgbCycle(float pack, float3 i1, float3 i2, float3 i3,
+              float3 c0, float3 c1, float3 c2, float3 c3, float3 c4, float hasComb,
+              out float3 o0, out float3 o1, out float3 o2, out float3 o3, out float3 o4) {
+    float3 a0, a1, a2, a3, a4, b0, b1, b2, b3, b4, k0, k1, k2, k3, k4, d0, d1, d2, d3, d4;
+    rgbOperand(nibble(pack, 1.0), i1, i2, i3, c0, c1, c2, c3, c4, hasComb, a0, a1, a2, a3, a4);
+    rgbOperand(nibble(pack, 16.0), i1, i2, i3, c0, c1, c2, c3, c4, hasComb, b0, b1, b2, b3, b4);
+    rgbOperand(nibble(pack, 256.0), i1, i2, i3, c0, c1, c2, c3, c4, hasComb, k0, k1, k2, k3, k4);
+    rgbOperand(nibble(pack, 4096.0), i1, i2, i3, c0, c1, c2, c3, c4, hasComb, d0, d1, d2, d3, d4);
+    float3 e0 = a0 - b0, e1 = a1 - b1, e2 = a2 - b2, e3 = a3 - b3, e4 = a4 - b4;
+    float cTex = anyBasis(k0, k1, k2, k3);
+    float dTex = anyBasis(e0, e1, e2, e3);
+    // C constant: (A-B) scaled by C. Else A-B constant: C scaled by (A-B).
+    // Else texture x texture: approximate C's texture terms as white (as the CPU did).
+    float useC = (cTex > 0.5 && dTex < 0.5) ? 1.0 : 0.0;
+    float nonLinear = (cTex > 0.5 && dTex > 0.5) ? 1.0 : 0.0;
+    float3 scale = lerp(k4 + (k0 + k1 + k2 + k3) * nonLinear, e4, useC);
+    o0 = lerp(e0, k0, useC) * scale + d0;
+    o1 = lerp(e1, k1, useC) * scale + d1;
+    o2 = lerp(e2, k2, useC) * scale + d2;
+    o3 = lerp(e3, k3, useC) * scale + d3;
+    o4 = lerp(e4, k4, useC) * scale + d4;
+}
+
+float3 alphaOperand(float code, float4 in1, float4 in2, float4 in3, float3 comb, float hasComb) {
+    float3 f;
+    f.x = isCode(code, 8.0) + isCode(code, 9.0);
+    f.y = isCode(code, 10.0) + isCode(code, 11.0);
+    f.z = in1.a * isCode(code, 1.0) + in2.a * isCode(code, 2.0) + in3.a * isCode(code, 3.0) +
+          isCode(code, 12.0) + 0.5 * isCode(code, 14.0);
+    return f + comb * (isCode(code, 13.0) * hasComb);
+}
+
+float3 alphaCycle(float pack, float4 in1, float4 in2, float4 in3, float3 comb, float hasComb) {
+    float3 a = alphaOperand(nibble(pack, 1.0), in1, in2, in3, comb, hasComb);
+    float3 b = alphaOperand(nibble(pack, 16.0), in1, in2, in3, comb, hasComb);
+    float3 c = alphaOperand(nibble(pack, 256.0), in1, in2, in3, comb, hasComb);
+    float3 d = alphaOperand(nibble(pack, 4096.0), in1, in2, in3, comb, hasComb);
+    float3 diff = a - b;
+    float cTex = (abs(c.x) + abs(c.y)) > 0.0 ? 1.0 : 0.0;
+    float dTex = (abs(diff.x) + abs(diff.y)) > 0.0 ? 1.0 : 0.0;
+    float useC = (cTex > 0.5 && dTex < 0.5) ? 1.0 : 0.0;
+    float nonLinear = (cTex > 0.5 && dTex > 0.5) ? 1.0 : 0.0;
+    float scale = lerp(lerp(c.z, c.x + c.y + c.z, nonLinear), diff.z, useC);
+    return lerp(diff, c, useC) * scale + d;
+}
+
+void main(float4 position : POSITION, float4 uv : TEXCOORD0,
+          float4 in1 : TEXCOORD1, float4 in2 : TEXCOORD2, float4 in3 : TEXCOORD3,
+          float4 fog : TEXCOORD4, float4 packs : TEXCOORD5, float4 misc : TEXCOORD6,
+          float4 lean : TEXCOORD7,
+          out float4 outPosition : POSITION, out float4 outUv : TEXCOORD0,
+          out float4 outK0 : TEXCOORD1, out float4 outK1 : TEXCOORD2, out float4 outK2 : TEXCOORD3,
+          out float4 outK3 : TEXCOORD4, out float4 outK4 : TEXCOORD5, out float4 outState : TEXCOORD6,
+          out float4 outInput3 : TEXCOORD7, out float4 outInput1 : COLOR0, out float4 outInput2 : COLOR1) {
+    float3 z = float3(0.0);
+    float3 r0, r1, r2, r3, r4;
+    rgbCycle(packs.x, in1.rgb, in2.rgb, in3.rgb, z, z, z, z, z, 0.0, r0, r1, r2, r3, r4);
+    float3 a = alphaCycle(packs.y, in1, in2, in3, z, 0.0);
+    if (misc.x > 0.5) {
+        float3 s0, s1, s2, s3, s4;
+        rgbCycle(packs.z, in1.rgb, in2.rgb, in3.rgb, r0, r1, r2, r3, r4, 1.0, s0, s1, s2, s3, s4);
+        a = alphaCycle(packs.w, in1, in2, in3, a, 1.0);
+        r0 = s0; r1 = s1; r2 = s2; r3 = s3; r4 = s4;
+    }
+
+    // N64 fog: rgb = mix(rgb, fog.rgb, fog.a) folded into the coefficients; alpha untouched.
+    float keep = 1.0 - fog.w;
+    outK0 = float4(r0 * keep, a.x);
+    outK1 = float4(r1 * keep, a.y);
+    outK2 = float4(r2 * keep, a.z);
+    outK3 = float4(r3 * keep, 0.0);
+    outK4 = float4(r4 * keep + fog.rgb * fog.w, 0.0);
+
+    // Lean programs read state.xyz as plain flags; the full (title) program reads
+    // state.x = material and state.y = packed flags.
+    outState = misc.y < 0.5 ? float4(lean.xyz, 0.0) : float4(misc.y, misc.z, 0.0, 0.0);
+
+    outPosition = position;
+    outUv = uv;
+    outInput1 = in1;
+    outInput2 = in2;
+    outInput3 = in3;
+}

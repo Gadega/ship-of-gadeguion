@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Lean fragment program for cut-out surfaces (material 0 with texture edge or alpha
+// threshold: leaves, grass, fences). Same as fast3d_ps3_generic.fcg plus the clip()s. The full program
+// (fast3d_ps3.fcg) also evaluates the title-logo/lettering materials for every pixel
+// and decodes flag bits with fmod/floor per pixel; on the RSX that made busy scenes
+// GPU-bound. Here the CPU writes the per-draw flags as plain 0/1 values:
+//   state.x = alpha used (opt_alpha), state.y = texture edge, state.z = alpha threshold.
+void main(float4 uv : TEXCOORD0,
+          float4 k0 : TEXCOORD1, float4 k1 : TEXCOORD2, float4 k2 : TEXCOORD3,
+          float4 k3 : TEXCOORD4, float4 k4 : TEXCOORD5, float4 state : TEXCOORD6,
+          uniform sampler2D image : TEXUNIT0, uniform sampler2D image1 : TEXUNIT1,
+          out float4 outColor : COLOR) {
+    float4 tex0 = tex2D(image, uv.xy);
+    float4 tex1 = tex2D(image1, uv.zw);
+
+    float3 color = saturate(k0.rgb * tex0.rgb + k1.rgb * tex0.aaa + k2.rgb * tex1.rgb +
+                            k3.rgb * tex1.aaa + k4.rgb);
+    float alpha = saturate(k0.w * tex0.a + k1.w * tex1.a + k2.w);
+    alpha = lerp(1.0, alpha, state.x);
+
+    clip(state.y > 0.5 ? alpha - 0.19 : 1.0);
+    alpha = lerp(alpha, 1.0, state.y);
+    clip(state.z > 0.5 ? alpha - 0.03125 : 1.0);
+
+    outColor = float4(color, alpha);
+}

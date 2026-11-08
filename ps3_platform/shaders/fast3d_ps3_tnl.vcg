@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// GPU vertex pipeline ("T&L on the RSX"). The CPU passes the N64 vertices almost
+// as they are (ob s16 x3 + transform slot, tc s16 x2, cn u8 x4) and this program
+// does what Fast3D's GfxSpVertex + GfxSpTri1 + our per-vertex combiner fill did on
+// the PPU: transform, lighting, texgen, fog, texture coordinates and the combiner
+// forms k0..k4 consumed by the unchanged fragment programs.
+//
+// Constants (C[]), filled by fast3d_rsx_ps3.c (oot_ps3_rsx_tnl_*):
+//   C[0..24]   combiner: form b = S.r*C[5b] + S.g*C[5b+1] + S.b*C[5b+2] + S.a*C[5b+3] + C[5b+4]
+//              (.xyz = rgb form k_b, .w = alpha form for b < 3); S = shade rgba 0..1
+//   C[25]      texture 0 uv = U*xy + zw;  C[26] texture 1
+//   C[27]      fog colour rgb, w = 1 when fog is folded in
+//   C[28]      x = 1: fog factor from the vertex (shade alpha), 0: constant y
+//   C[29]      fragment state (alpha used, texture edge, alpha threshold, 0)
+//   C[30]      ambient light rgb (0..1)
+//   C[31..37]  directional light colours rgb (0..1), unused lights black
+//   C[40 + 15k ...] transform context k (palette slot = position.w):
+//     +0..3  rows of the projection*modelview matrix (clip = x*R0 + y*R1 + z*R2 + R3)
+//     +4     flags: x lighting, y texgen, z texgen linear, w G_FOG
+//     +5     x,y texture scaling s,t / 65536; z fog multiplier; w fog offset
+//     +6..12 light directions in model space (normalised, Fast3D current_lights_coeffs)
+//     +13,14 lookat x / y directions (texgen)
+//     the clip matrix already contains the aspect ratio and the z remap; the raw N64
+//     z for fog is recovered as 2z' - w.
+void main(float4 pos : POSITION, float4 tc : TEXCOORD0, float4 cn : COLOR0,
+          uniform float4 C[460],
+          out float4 outPosition : POSITION, out float4 outUv : TEXCOORD0,
+          out float4 outK0 : TEXCOORD1, out float4 outK1 : TEXCOORD2, out float4 outK2 : TEXCOORD3,
+          out float4 outK3 : TEXCOORD4, out float4 outK4 : TEXCOORD5, out float4 outState : TEXCOORD6) {
+    // The CPU stores the constant index 40 + 15 * slot; indexing with the float keeps
+    // Cg to one address register component (PSL1GHT cgcomp mishandles A0.y).
+    float b = pos.w;
+    float4 clip = pos.x * C[b] + pos.y * C[b + 1] + pos.z * C[b + 2] + C[b + 3];
+    outPosition = clip;
+    float4 flags = C[b + 4];
+    float4 misc = C[b + 5];
+
+    // Normal: the colour bytes as signed values (lit vertices store the normal there).
+    float3 n = cn.xyz - 256.0 * step(127.5, cn.xyz);
+
+    // Lighting (Fast3D GfxSpVertex): ambient + sum of max(0, n.coeff / 127) * colour.
+    // Written out (no loop): branches and condition codes are avoided on purpose,
+    // PSL1GHT's cgcomp handles plain arithmetic best.
+    float3 lit = C[30].rgb;
+    lit += max(dot(n, C[b + 6].xyz) * (1.0 / 127.0), 0.0) * C[31].rgb;
+    lit += max(dot(n, C[b + 7].xyz) * (1.0 / 127.0), 0.0) * C[32].rgb;
+    lit += max(dot(n, C[b + 8].xyz) * (1.0 / 127.0), 0.0) * C[33].rgb;
+    lit += max(dot(n, C[b + 9].xyz) * (1.0 / 127.0), 0.0) * C[34].rgb;
+    lit += max(dot(n, C[b + 10].xyz) * (1.0 / 127.0), 0.0) * C[35].rgb;
+    lit += max(dot(n, C[b + 11].xyz) * (1.0 / 127.0), 0.0) * C[36].rgb;
+    lit += max(dot(n, C[b + 12].xyz) * (1.0 / 127.0), 0.0) * C[37].rgb;
+    lit = min(lit, 1.0);
+    float3 shade = lerp(cn.rgb * (1.0 / 255.0), lit, flags.x);
+
+    // Texture coordinates: (tc * scale) >> 16, or texgen from the lookat directions.
+    float2 U = floor(tc.xy * misc.xy);
+    float2 g = clamp(float2(dot(n, C[b + 13].xyz), dot(n, C[b + 14].xyz)) * (1.0 / 127.0), -1.0, 1.0);
+    float2 gLinear = acos(-g) * 0.159155;
+    float2 gSphere = (g + 1.0) * 0.25;
+    float2 gen = lerp(gSphere, gLinear, flags.z) * misc.xy * 65536.0;
+    gen = sign(gen) * floor(abs(gen)); // (int32_t) truncation
+    U = lerp(U, gen, flags.y * flags.x);
+    outUv = float4(U * C[25].xy + C[25].zw, U * C[26].xy + C[26].zw);
+
+    // Fog factor (0..255) from the raw N64 z/w, as GfxSpVertex.
+    float w = clip.w;
+    w = lerp(w, 0.001, step(abs(w), 0.001));          // |w| < 0.001 -> 0.001
+    float winv = 1.0 / w;
+    winv = lerp(winv, 32767.0, step(winv, 0.0));       // behind the eye -> 32767
+    float fogZ = clamp((2.0 * clip.z - clip.w) * winv * misc.z + misc.w, 0.0, 255.0);
+    float shadeA = lerp(cn.w, fogZ, flags.w) * (1.0 / 255.0);
+
+    float4 S = float4(shade, shadeA);
+    float4 k0 = S.x * C[0] + S.y * C[1] + S.z * C[2] + S.w * C[3] + C[4];
+    float4 k1 = S.x * C[5] + S.y * C[6] + S.z * C[7] + S.w * C[8] + C[9];
+    float4 k2 = S.x * C[10] + S.y * C[11] + S.z * C[12] + S.w * C[13] + C[14];
+    float4 k3 = S.x * C[15] + S.y * C[16] + S.z * C[17] + S.w * C[18] + C[19];
+    float4 k4 = S.x * C[20] + S.y * C[21] + S.z * C[22] + S.w * C[23] + C[24];
+
+    // N64 fog: rgb = mix(rgb, fog.rgb, f), alpha untouched (as the CPU fill did).
+    float f = lerp(C[28].y, shadeA, C[28].x) * C[27].w;
+    float keep = 1.0 - f;
+    k0.xyz *= keep; k1.xyz *= keep; k2.xyz *= keep; k3.xyz *= keep;
+    k4.xyz = k4.xyz * keep + C[27].rgb * f;
+
+    outK0 = k0; outK1 = k1; outK2 = k2; outK3 = k3; outK4 = k4;
+    outState = C[29];
+}

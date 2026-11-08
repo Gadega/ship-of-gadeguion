@@ -1,0 +1,65 @@
+#pragma once
+#include <string>
+#include <vector>
+
+namespace std {
+namespace filesystem {
+class path {
+  public:
+    path() = default;
+    path(const char* value) : value_(value ? value : "") {}
+    path(const std::string& value) : value_(value) {}
+    std::string string() const { return value_; }
+    const char* c_str() const { return value_.c_str(); }
+    path filename() const { return path(value_); }
+    path stem() const { return path(value_); }
+    path extension() const { return path(); }
+    path parent_path() const { return path(); }
+    bool empty() const { return value_.empty(); }
+    path operator/(const path& rhs) const { return path(value_ + "/" + rhs.value_); }
+    path& operator/=(const path& rhs) {
+        value_ += "/";
+        value_ += rhs.value_;
+        return *this;
+    }
+    path& operator/=(const std::string& rhs) {
+        value_ += "/";
+        value_ += rhs;
+        return *this;
+    }
+
+  private:
+    std::string value_;
+};
+
+class directory_entry {
+  public:
+    directory_entry() = default;
+    std::filesystem::path path() const { return std::filesystem::path(); }
+};
+
+class directory_iterator {
+  public:
+    directory_iterator() = default;
+    explicit directory_iterator(const path&) {}
+    directory_iterator begin() const { return directory_iterator(); }
+    directory_iterator end() const { return directory_iterator(); }
+    directory_iterator& operator++() { return *this; }
+    bool operator!=(const directory_iterator&) const { return false; }
+    directory_entry operator*() const { return directory_entry(); }
+};
+class recursive_directory_iterator : public directory_iterator {
+  public:
+    recursive_directory_iterator() = default;
+    explicit recursive_directory_iterator(const path& value) : directory_iterator(value) {}
+};
+
+inline bool exists(const path&) { return false; }
+inline bool is_directory(const path&) { return false; }
+inline bool is_regular_file(const path&) { return false; }
+inline bool create_directories(const path&) { return true; }
+inline bool remove(const path&) { return true; }
+inline path current_path() { return path("."); }
+inline path absolute(const path& value) { return value; }
+} // namespace filesystem
+} // namespace std

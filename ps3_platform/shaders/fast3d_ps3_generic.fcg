@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Lean fragment program for every normal surface (material 0). The full program
+// (fast3d_ps3.fcg) also evaluates the title-logo/lettering materials for every pixel
+// and decodes flag bits with fmod/floor per pixel; on the RSX that made busy scenes
+// GPU-bound. Here the CPU writes the per-draw flags as plain 0/1 values:
+//   state.x = alpha used (opt_alpha), state.y = texture edge, state.z = alpha threshold.
+// No clip() here: a program that can discard pixels turns off the RSX's early depth
+// rejection for everything it draws. Cut-out surfaces (texture edge / alpha threshold)
+// use fast3d_ps3_generic_clip.fcg instead.
+void main(float4 uv : TEXCOORD0,
+          float4 k0 : TEXCOORD1, float4 k1 : TEXCOORD2, float4 k2 : TEXCOORD3,
+          float4 k3 : TEXCOORD4, float4 k4 : TEXCOORD5, float4 state : TEXCOORD6,
+          uniform sampler2D image : TEXUNIT0, uniform sampler2D image1 : TEXUNIT1,
+          out float4 outColor : COLOR) {
+    float4 tex0 = tex2D(image, uv.xy);
+    float4 tex1 = tex2D(image1, uv.zw);
+
+    float3 color = saturate(k0.rgb * tex0.rgb + k1.rgb * tex0.aaa + k2.rgb * tex1.rgb +
+                            k3.rgb * tex1.aaa + k4.rgb);
+    float alpha = saturate(k0.w * tex0.a + k1.w * tex1.a + k2.w);
+    alpha = lerp(1.0, alpha, state.x);
+
+    outColor = float4(color, alpha);
+}

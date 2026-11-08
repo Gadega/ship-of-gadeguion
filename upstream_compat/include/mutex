@@ -1,0 +1,43 @@
+#pragma once
+
+namespace std {
+class mutex {
+  public:
+    void lock() {}
+    bool try_lock() { return true; }
+    void unlock() {}
+};
+
+template <typename Mutex>
+class lock_guard {
+  public:
+    explicit lock_guard(Mutex& mutex) : mutex_(mutex) { mutex_.lock(); }
+    ~lock_guard() { mutex_.unlock(); }
+
+  private:
+    Mutex& mutex_;
+};
+
+template <typename Mutex>
+class unique_lock {
+  public:
+    unique_lock() : mutex_(nullptr), owns_(false) {}
+    explicit unique_lock(Mutex& mutex) : mutex_(&mutex), owns_(true) { mutex_->lock(); }
+    ~unique_lock() {
+        if (owns_ && mutex_ != nullptr) {
+            mutex_->unlock();
+        }
+    }
+    bool owns_lock() const { return owns_; }
+    void unlock() {
+        if (owns_ && mutex_ != nullptr) {
+            mutex_->unlock();
+            owns_ = false;
+        }
+    }
+
+  private:
+    Mutex* mutex_;
+    bool owns_;
+};
+} // namespace std

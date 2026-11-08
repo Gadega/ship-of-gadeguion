@@ -1,0 +1,10 @@
+#pragma once
+namespace std {
+class condition_variable {
+  public:
+    void notify_one() {}
+    void notify_all() {}
+    template <typename Lock> void wait(Lock&) {}
+    template <typename Lock, typename Predicate> void wait(Lock&, Predicate pred) { (void)pred; }
+};
+} // namespace std
