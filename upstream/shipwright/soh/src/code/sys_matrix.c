@@ -20,8 +20,37 @@ MtxF gMtxFClear = {
 };
 // clang-format on
 
+#ifdef __PS3__
+// The render thread replays frame-interpolation recordings through these Matrix_*
+// functions (FrameInterpolation_Interpolate) while the game thread draws the next
+// update with them: each thread gets its own stack. The render thread is identified
+// by its PPU thread pointer (r13), set by Matrix_Ps3SetRenderThread.
+static MtxF* sGameMatrixStack;
+static MtxF* sGameCurrentMatrix;
+static MtxF sRenderMatrixStorage[20];
+static MtxF* sRenderMatrixStack = sRenderMatrixStorage;
+static MtxF* sRenderCurrentMatrix = sRenderMatrixStorage;
+static unsigned long long sRenderThreadToken = 1; // r13 is never 1
+static inline int Matrix_Ps3OnRenderThread(void) {
+    unsigned long long r13;
+    __asm__ volatile("mr %0,13" : "=r"(r13));
+    return r13 == sRenderThreadToken;
+}
+#define sMatrixStack (*(Matrix_Ps3OnRenderThread() ? &sRenderMatrixStack : &sGameMatrixStack))
+#define sCurrentMatrix (*(Matrix_Ps3OnRenderThread() ? &sRenderCurrentMatrix : &sGameCurrentMatrix))
+void Matrix_Ps3SetRenderThread(void) {
+    __asm__ volatile("mr %0,13" : "=r"(sRenderThreadToken));
+}
+// Called by the render thread before each interpolation pass: an empty stack.
+void Matrix_Ps3ResetRenderStack(void) {
+    sRenderMatrixStack = sRenderMatrixStorage;
+    sRenderCurrentMatrix = sRenderMatrixStorage;
+    Matrix_MtxFCopy(sRenderCurrentMatrix, &gMtxFClear);
+}
+#else
 static MtxF* sMatrixStack;   // "Matrix_stack"
 static MtxF* sCurrentMatrix; // "Matrix_now"
+#endif
 
 void Matrix_SaveState(SaveStateCtx* ctx) {
     SaveState_Blob(ctx, sMatrixStack, sizeof(MtxF) * 20);

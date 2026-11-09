@@ -602,7 +602,9 @@ static Gfx* volatile sRenderJobCommands;
 static volatile bool sRenderJobInterpolate;
 static int sRenderThreadState = 0; // 0 not started, 1 running, -1 failed to start
 static int sRenderThreadEnabled = -1; // debug menu; USRDIR/render_thread_off
+void Matrix_Ps3SetRenderThread(void); // sys_matrix.c: this thread gets its own matrix stack
 static void Ps3RenderThreadEntry(void*) {
+    Matrix_Ps3SetRenderThread();
     oot_ps3_early_trace("graph: render thread running");
     for (;;) {
         oot_ps3_sem_wait(sRenderJobSem);

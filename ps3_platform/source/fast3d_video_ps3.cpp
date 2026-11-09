@@ -795,6 +795,7 @@ extern "C" int oot_ps3_tnl_submit(const void* records, uint32_t count, float* co
                                    : 0;
 }
 
+extern "C" void Matrix_Ps3ResetRenderStack(void); // sys_matrix.c
 extern "C" int oot_ps3_fast3d_render_commands_interp(void* commands, int index, float t, int interpolate) {
     if (!commands) return 0;
     if (!oot_ps3_shipwright_video_start()) return 0;
@@ -804,6 +805,9 @@ extern "C" int oot_ps3_fast3d_render_commands_interp(void* commands, int index, 
     sPs3Renderer = &renderer;
     static std::unordered_map<Mtx*, MtxF> matrixReplacements;
     if (interpolate) {
+        // Interpolation replays the recording through the game's Matrix_* functions; on
+        // the render thread they use its own stack (sys_matrix.c), start it empty.
+        Matrix_Ps3ResetRenderStack();
         matrixReplacements = FrameInterpolation_Interpolate(t);
     } else {
         matrixReplacements.clear();
