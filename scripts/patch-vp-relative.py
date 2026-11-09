@@ -21,6 +21,40 @@ import sys
 HEADER = ">HHHHHHIIIIIHH"
 
 
+def get_src(d1, d2, d3, k):
+    """17-bit source field k (RPCS3 RSXVertexProgram.h layout)."""
+    if k == 0:
+        return ((d1 & 0xFF) << 9) | (d2 >> 23)
+    if k == 1:
+        return (d2 >> 6) & 0x1FFFF
+    return ((d2 & 0x3F) << 11) | (d3 >> 21)
+
+
+def set_src(d1, d2, d3, k, src):
+    if k == 0:
+        d1 = (d1 & ~0xFF) | (src >> 9)
+        d2 = (d2 & 0x007FFFFF) | ((src & 0x1FF) << 23)
+    elif k == 1:
+        d2 = (d2 & ~(0x1FFFF << 6)) | (src << 6)
+    else:
+        d2 = (d2 & ~0x3F) | (src >> 11)
+        d3 = (d3 & 0x001FFFFF) | ((src & 0x7FF) << 21)
+    return d1, d2 & 0xFFFFFFFF, d3 & 0xFFFFFFFF
+
+
+def relative_operands(line):
+    """(negate, abs, 8-bit swizzle) for each c[A0.x ...] operand, in order."""
+    out = []
+    for m in re.finditer(r"(-?)(\|?)c\[A0\.x[^\]]*\](?:\.([xyzw]{1,4}))?", line):
+        comps = m.group(3) or "xyzw"
+        comps = comps + comps[-1] * (4 - len(comps))
+        swizzle = 0
+        for shift, c in zip((6, 4, 2, 0), comps):
+            swizzle |= "xyzw".index(c) << shift
+        out.append((1 if m.group(1) else 0, 1 if m.group(2) else 0, swizzle))
+    return out
+
+
 def instructions(dump_text):
     """The assembly instruction lines, in order (declarations and labels skipped)."""
     out = []
@@ -65,21 +99,19 @@ def main(vpo_path, dump_path):
         d0, d1, d2, d3 = struct.unpack_from(">4I", data, at)
         d1 = (d1 & ~(0x3FF << 12)) | (offset << 12)  # const_src
         d3 |= 1 << 1                                   # index_const
-        # cgcomp also leaves the constant operand's register type at 0 (invalid) instead of
-        # 3 (constant). Source register type = low 2 bits of each 17-bit source field:
-        # src0 at D2 bit 23, src1 at D2 bit 6, src2 at D3 bit 21.
-        fixed = 0
-        for word, bit in ((2, 23), (2, 6), (3, 21)):
-            value = d2 if word == 2 else d3
-            if (value >> bit) & 3 == 0:
-                value |= 3 << bit
-                fixed += 1
-            if word == 2:
-                d2 = value
-            else:
-                d3 = value
-        if fixed != len(re.findall(r"c\[A0\.", line)):
-            sys.exit("patch-vp-relative: %s: %d type-0 sources for %s" % (vpo_path, fixed, line))
+        # cgcomp also leaves each relative constant operand as register type 0 (invalid)
+        # with the default swizzle, no negation and no abs: the component selector
+        # (e.g. the .z of c[A0.x + 5].z) is lost. Rebuild those sources from the listing.
+        # The type-0 slots (src0, src1, src2 in order) match the operands in order.
+        ops = relative_operands(line)
+        slots = [k for k in range(3) if get_src(d1, d2, d3, k) & 3 == 0]
+        if len(slots) != len(ops):
+            sys.exit("patch-vp-relative: %s: %d type-0 sources, %d relative operands: %s" % (vpo_path, len(slots), len(ops), line))
+        for k, (neg, absolute, swizzle) in zip(slots, ops):
+            src = get_src(d1, d2, d3, k)
+            src = (src & ~0x1FF03) | 3 | (swizzle << 8) | (neg << 16)
+            d1, d2, d3 = set_src(d1, d2, d3, k, src)
+            d0 = (d0 & ~(1 << (21 + k))) | (absolute << (21 + k))
         struct.pack_into(">4I", data, at, d0, d1, d2, d3)
         patched += 1
     open(vpo_path, "wb").write(bytes(data))
