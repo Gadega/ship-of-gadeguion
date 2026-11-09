@@ -13,6 +13,7 @@
 static uint32_t sPs3RsxFrames;
 static uint32_t sPs3RsxDraws;
 static int sDepthTest, sDepthWrite, sZmodeDecal;
+static void Ps3TnlCacheInvalidate(void); /* GPU-path state cache (oot_ps3_rsx_tnl_draw) */
 static uint32_t sPs3TwoTexLogged;
 void oot_ps3_rsx_set_depth(int test, int write) {
     sDepthTest = test;
@@ -694,6 +695,7 @@ static uint32_t Ps3SelfTestPixel(uint32_t width, uint32_t height) {
 /* Cleared to blue: white = drawn right, black = drawn with a zero constant, blue = nothing drawn. */
 #define PS3_SELFTEST_CLEAR 0x00204080U
 static void Ps3SelfTestClear(void) {
+    Ps3TnlCacheInvalidate();
     rsxSetClearColor(ctx, PS3_SELFTEST_CLEAR);
     rsxSetClearDepthStencil(ctx, 0xffffff00);
     rsxClearSurface(ctx, GCM_CLEAR_R | GCM_CLEAR_G | GCM_CLEAR_B | GCM_CLEAR_A | GCM_CLEAR_Z);
@@ -708,6 +710,7 @@ static void Ps3RawTestDraw(rsxVertexProgram* prog, void* code, const float pos[3
     float* dst = vertices[frameIndex];
     uint32_t offset, i, a;
     float vtx[VERTEX_FLOATS];
+    Ps3TnlCacheInvalidate();
     for (i = 0; i < 3; ++i) {
         memset(vtx, 0, sizeof(vtx));
         memcpy(vtx, pos[i], 4 * sizeof(float));
@@ -856,6 +859,7 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
 }
 
 int oot_ps3_rsx_begin(uint32_t width, uint32_t height) {
+    Ps3TnlCacheInvalidate();
     if (!gpu_prepare() || !gpu_depth(width, height)) return 0;
     ctx = (gcmContextData*)oot_ps3_shipwright_video_rsx_context();
     if (!ctx) return 0;
@@ -977,6 +981,7 @@ int oot_ps3_rsx_triangles(const float* vbo, uint32_t stride, uint32_t triangles,
     uint32_t count, base, offset;
     GpuTexture* t0;
     GpuTexture* t1;
+    Ps3TnlCacheInvalidate();
     if (!prepared || !vbo || !triangles || triangles > MAX_VERTICES / 3 ||
         stride < 4 || stride > 32) return 0;
     unsigned long long ps3T0 = oot_ps3_microseconds_now();
@@ -1428,13 +1433,78 @@ static void Ps3TnlCpuCheck(const uint8_t* rec, const float* C4, uint32_t numCons
     oot_ps3_early_trace(line);
 }
 
+/* GPU-path state cache: what the RSX already has, so a draw only sends what changed
+ * (before: every draw re-sent 40 constants, 11 vertex inputs, both textures and all
+ * render states - ~6 ms per draw of command-buffer writes at ~880 draws per update).
+ * Anything else that changes RSX state (CPU path, overlay, framebuffer copies, the
+ * self-test, a new frame) calls Ps3TnlCacheInvalidate(). */
+typedef struct {
+    uint32_t offset, format, width, height;
+    int wrapS, wrapT, linear;
+} Ps3TexKey;
+static int sTnlCacheValid;
+static int sTnlConstValid;
+static float sTnlConstShadow[40 * 4];
+static uint32_t sTnlBindBase;
+static int sTnlBindFloat;
+static Ps3TexKey sTnlTexKey[2];
+static int sTnlBlend, sTnlDepthTest, sTnlDepthWrite, sTnlDecal, sTnlCull, sTnlFront;
+static void Ps3TnlCacheInvalidate(void) {
+    sTnlCacheValid = 0;
+    sTnlConstValid = 0;
+}
+static void Ps3TnlBindTexture(int unit, const GpuTexture* t) {
+    Ps3TexKey key;
+    memset(&key, 0, sizeof(key));
+    key.offset = t->image.offset;
+    key.format = t->image.format;
+    key.width = t->image.width;
+    key.height = t->image.height;
+    key.wrapS = t->wrapS;
+    key.wrapT = t->wrapT;
+    key.linear = t->linear;
+    if (sTnlCacheValid && memcmp(&key, &sTnlTexKey[unit], sizeof(key)) == 0) return;
+    sTnlTexKey[unit] = key;
+    rsxLoadTexture(ctx, unit, &t->image);
+    rsxTextureWrapMode(ctx, unit, Ps3GcmWrap(t->wrapS), Ps3GcmWrap(t->wrapT), GCM_TEXTURE_CLAMP_TO_EDGE, 0,
+                       GCM_TEXTURE_ZFUNC_LESS, 0);
+    rsxTextureFilter(ctx, unit, 0, t->linear ? GCM_TEXTURE_LINEAR : GCM_TEXTURE_NEAREST,
+                     t->linear ? GCM_TEXTURE_LINEAR : GCM_TEXTURE_NEAREST, GCM_TEXTURE_CONVOLUTION_QUINCUNX);
+}
+/* Uploads the constants of C[0..39] that differ from what the RSX has (runs of changed
+ * vec4, merged across single unchanged ones). */
+static void Ps3TnlUploadDrawConsts(const float* consts) {
+    uint32_t i = 0;
+    if (!sTnlConstValid) {
+        rsxLoadVertexProgramParameterBlock(ctx, vpTnl->const_start, 40U, (float*)consts);
+        memcpy(sTnlConstShadow, consts, sizeof(sTnlConstShadow));
+        sTnlConstUploads += 40U;
+        sTnlConstValid = 1;
+        return;
+    }
+    while (i < 40U) {
+        uint32_t j;
+        if (memcmp(consts + i * 4U, sTnlConstShadow + i * 4U, 16) == 0) {
+            ++i;
+            continue;
+        }
+        j = i + 1U;
+        while (j < 40U && (memcmp(consts + j * 4U, sTnlConstShadow + j * 4U, 16) != 0 ||
+                           (j + 1U < 40U && memcmp(consts + (j + 1U) * 4U, sTnlConstShadow + (j + 1U) * 4U, 16) != 0)))
+            ++j;
+        rsxLoadVertexProgramParameterBlock(ctx, vpTnl->const_start + i, j - i, (float*)(consts + i * 4U));
+        memcpy(sTnlConstShadow + i * 4U, consts + i * 4U, (size_t)(j - i) * 16U);
+        sTnlConstUploads += j - i;
+        i = j;
+    }
+}
+
 int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int drawDirty, uint32_t firstConst,
                          uint32_t numConst, uint32_t texture0_id, uint32_t texture1_id, int alpha, int cullMode,
                          int cullFlip, int floatAttribs) {
     GpuTexture* t0;
     GpuTexture* t1;
     uint8_t* dst;
-    uint32_t offset;
     unsigned long long t0us;
     /* Float mode (USRDIR/tnl_float, diagnostic): 48-byte float vertices instead of the
      * packed 16-byte records, to rule out the s16/u8 attribute formats. */
@@ -1443,6 +1513,8 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
     static unsigned int sCheckDraw = 0;
     if (!prepared || !vpTnl || !records || !count || count * units > TNL_MAX_RECORDS || numConst > 460U) return 0;
     t0us = oot_ps3_microseconds_now();
+    (void)drawDirty; /* the constant cache compares with what the RSX has */
+    if (floatAttribs) tnlCursor = (tnlCursor + 2U) / 3U * 3U; /* whole 48-byte vertices from the base */
     if (tnlCursor + count * units > TNL_MAX_RECORDS) {
         gpu_wait();
         tnlCursor = 0;
@@ -1493,24 +1565,15 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
             rsxLoadVertexProgram(ctx, vpTnl, vpTnlCode);
             sCurrentVp = wantVp;
             ++sTnlVpSwitches;
-            drawDirty = 1; /* a program load can overwrite constants: send this draw's again */
+            sTnlConstValid = 0; /* a program load can overwrite constants: send this draw's again */
         }
     }
-    /* Only the constants changed since the last T&L draw (the caller tracks them);
-     * C[29] (fragment state flags) every time. */
-    if (drawDirty) {
-        rsxLoadVertexProgramParameterBlock(ctx, vpTnl->const_start, 40U, consts);
-        sTnlConstUploads += 40U;
-    } else {
-        rsxLoadVertexProgramParameterBlock(ctx, vpTnl->const_start + 29U, 1, consts + 29U * 4U);
-    }
+    Ps3TnlUploadDrawConsts(consts);
     if (numConst > firstConst) {
         rsxLoadVertexProgramParameterBlock(ctx, vpTnl->const_start + firstConst, numConst - firstConst,
                                            consts + firstConst * 4U);
         sTnlConstUploads += numConst - firstConst;
     }
-    rsxTextureControl(ctx, 0, GCM_TRUE, 0, 0, GCM_TEXTURE_MAX_ANISO_1);
-    rsxTextureControl(ctx, 1, GCM_TRUE, 0, 0, GCM_TEXTURE_MAX_ANISO_1);
     {
         const int wantFp = (sLeanEdge > 0.5f || sLeanThreshold > 0.5f) ? 2 : 1;
         if (wantFp != sCurrentFp) {
@@ -1519,67 +1582,87 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
             sCurrentFp = wantFp;
         }
     }
-    rsxLoadTexture(ctx, 0, &t0->image);
-    rsxLoadTexture(ctx, 1, &t1->image);
-    rsxTextureWrapMode(ctx, 0, Ps3GcmWrap(t0->wrapS), Ps3GcmWrap(t0->wrapT),
-                       GCM_TEXTURE_CLAMP_TO_EDGE, 0, GCM_TEXTURE_ZFUNC_LESS, 0);
-    rsxTextureWrapMode(ctx, 1, Ps3GcmWrap(t1->wrapS), Ps3GcmWrap(t1->wrapT),
-                       GCM_TEXTURE_CLAMP_TO_EDGE, 0, GCM_TEXTURE_ZFUNC_LESS, 0);
-    rsxTextureFilter(ctx, 0, 0, t0->linear ? GCM_TEXTURE_LINEAR : GCM_TEXTURE_NEAREST,
-                     t0->linear ? GCM_TEXTURE_LINEAR : GCM_TEXTURE_NEAREST, GCM_TEXTURE_CONVOLUTION_QUINCUNX);
-    rsxTextureFilter(ctx, 1, 0, t1->linear ? GCM_TEXTURE_LINEAR : GCM_TEXTURE_NEAREST,
-                     t1->linear ? GCM_TEXTURE_LINEAR : GCM_TEXTURE_NEAREST, GCM_TEXTURE_CONVOLUTION_QUINCUNX);
-    rsxSetBlendEnable(ctx, alpha ? GCM_TRUE : GCM_FALSE);
-    rsxAddressToOffset(dst, &offset);
-    /* 5 = signed 16-bit (unnormalised), 7 = unsigned byte 0..255: RSX vertex formats
-     * not named in PSL1GHT's headers (libgcm S32K / UB256). Unused arrays get size 0. */
-    if (floatAttribs) {
-        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0, offset + 0, 48, 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0, offset + 16, 48, 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX1, 0, offset + 32, 48, 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-    } else {
-        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0, offset + 0, 16, 4, 5, GCM_LOCATION_RSX);
-        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0, offset + 8, 16, 2, 5, GCM_LOCATION_RSX);
-        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX1, 0, offset + 12, 16, 4, 7, GCM_LOCATION_RSX);
+    if (!sTnlCacheValid) {
+        rsxTextureControl(ctx, 0, GCM_TRUE, 0, 0, GCM_TEXTURE_MAX_ANISO_1);
+        rsxTextureControl(ctx, 1, GCM_TRUE, 0, 0, GCM_TEXTURE_MAX_ANISO_1);
     }
-    /* The colour/normal bytes go in through TEXCOORD1, not COLOR0: the RSX clamps
-     * COLOR inputs to 0..1, and these are 0..255 (and signed normals). */
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR1, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX2, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX3, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX4, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX5, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX6, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX7, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    Ps3TnlBindTexture(0, t0);
+    Ps3TnlBindTexture(1, t1);
+    /* Vertex inputs: bound once at the start of this frame's record buffer; each draw
+     * passes its first vertex. 5 = signed 16-bit (unnormalised), 7 = unsigned byte
+     * 0..255: RSX formats not named in PSL1GHT's headers (libgcm S32K / UB256). The
+     * colour/normal bytes go in through TEXCOORD1, not COLOR0: the RSX clamps COLOR
+     * inputs to 0..1, and these are 0..255 (and signed normals). */
+    {
+        uint32_t base;
+        rsxAddressToOffset(sTnlIndexDraw ? dst : tnlRecords[frameIndex], &base);
+        if (!sTnlCacheValid || sTnlIndexDraw || base != sTnlBindBase || sTnlBindFloat != (floatAttribs != 0)) {
+            if (floatAttribs) {
+                rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0, base + 0, 48, 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+                rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0, base + 16, 48, 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+                rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX1, 0, base + 32, 48, 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+            } else {
+                rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0, base + 0, 16, 4, 5, GCM_LOCATION_RSX);
+                rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0, base + 8, 16, 2, 5, GCM_LOCATION_RSX);
+                rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX1, 0, base + 12, 16, 4, 7, GCM_LOCATION_RSX);
+            }
+            rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+            rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR1, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+            rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX2, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+            rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX3, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+            rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX4, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+            rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX5, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+            rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX6, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+            rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX7, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+            sTnlBindBase = base;
+            sTnlBindFloat = floatAttribs != 0;
+        }
+    }
     {
         /* The probes (debug modes 2 and 4) draw without depth test or culling. */
         const int probe = sTnlDebugMode == 2 || sTnlDebugMode == 4 || sTnlDebugMode == 5;
+        const int depthTest = sDepthTest && !probe, depthWrite = sDepthWrite && !probe, decal = sZmodeDecal != 0;
+        const int blend = alpha != 0;
+        int cull, front;
         if (probe) cullMode = 0;
-        rsxSetDepthTestEnable(ctx, (sDepthTest && !probe) ? GCM_TRUE : GCM_FALSE);
-        rsxSetDepthWriteEnable(ctx, (sDepthWrite && !probe) ? GCM_TRUE : GCM_FALSE);
-    }
-    rsxSetDepthFunc(ctx, sZmodeDecal ? GCM_LEQUAL : GCM_LESS);
-    rsxSetPolygonOffsetFillEnable(ctx, sZmodeDecal ? GCM_TRUE : GCM_FALSE);
-    if (sZmodeDecal) rsxSetPolygonOffset(ctx, -2.0f, -2.0f);
-    /* N64 culling (cullMode 1 back, 2 front, 3 both). N64 back faces are clockwise
-     * in normalised device coordinates; cullFlip swaps the RSX's front face in case
-     * the hardware sees the winding the other way round (USRDIR/tnl_cullflip). */
-    if (cullMode != 0) {
-        rsxSetFrontFace(ctx, cullFlip ? GCM_FRONTFACE_CW : GCM_FRONTFACE_CCW);
-        rsxSetCullFace(ctx, cullMode == 1 ? GCM_CULL_BACK : (cullMode == 2 ? GCM_CULL_FRONT : GCM_CULL_ALL));
-        if (!sCullEnabled) {
-            rsxSetCullFaceEnable(ctx, GCM_TRUE);
-            sCullEnabled = 1;
+        cull = cullMode;
+        front = cullFlip ? 1 : 0;
+        if (!sTnlCacheValid || blend != sTnlBlend) rsxSetBlendEnable(ctx, blend ? GCM_TRUE : GCM_FALSE);
+        if (!sTnlCacheValid || depthTest != sTnlDepthTest) rsxSetDepthTestEnable(ctx, depthTest ? GCM_TRUE : GCM_FALSE);
+        if (!sTnlCacheValid || depthWrite != sTnlDepthWrite) rsxSetDepthWriteEnable(ctx, depthWrite ? GCM_TRUE : GCM_FALSE);
+        if (!sTnlCacheValid || decal != sTnlDecal) {
+            rsxSetDepthFunc(ctx, decal ? GCM_LEQUAL : GCM_LESS);
+            rsxSetPolygonOffsetFillEnable(ctx, decal ? GCM_TRUE : GCM_FALSE);
+            if (decal) rsxSetPolygonOffset(ctx, -2.0f, -2.0f);
         }
-    } else if (sCullEnabled) {
-        rsxSetCullFaceEnable(ctx, GCM_FALSE);
-        sCullEnabled = 0;
+        /* N64 culling (cullMode 1 back, 2 front, 3 both). N64 back faces are clockwise
+         * in normalised device coordinates; cullFlip swaps the RSX's front face in case
+         * the hardware sees the winding the other way round (USRDIR/tnl_cullflip). */
+        if (!sTnlCacheValid || cull != sTnlCull || front != sTnlFront) {
+            if (cull != 0) {
+                rsxSetFrontFace(ctx, front ? GCM_FRONTFACE_CW : GCM_FRONTFACE_CCW);
+                rsxSetCullFace(ctx, cull == 1 ? GCM_CULL_BACK : (cull == 2 ? GCM_CULL_FRONT : GCM_CULL_ALL));
+            }
+            if (cull != 0 && !sCullEnabled) {
+                rsxSetCullFaceEnable(ctx, GCM_TRUE);
+                sCullEnabled = 1;
+            } else if (cull == 0 && sCullEnabled) {
+                rsxSetCullFaceEnable(ctx, GCM_FALSE);
+                sCullEnabled = 0;
+            }
+        }
+        sTnlBlend = blend;
+        sTnlDepthTest = depthTest;
+        sTnlDepthWrite = depthWrite;
+        sTnlDecal = decal;
+        sTnlCull = cull;
+        sTnlFront = front;
+        sTnlCacheValid = 1;
     }
     if (sTnlIndexDraw) {
         rsxDrawIndexArray(ctx, GCM_TYPE_TRIANGLES, indexOffset, count, GCM_INDEX_TYPE_16B, GCM_LOCATION_RSX);
     } else {
-        rsxDrawVertexArray(ctx, GCM_TYPE_TRIANGLES, 0, count);
+        rsxDrawVertexArray(ctx, GCM_TYPE_TRIANGLES, tnlCursor / units, count);
     }
     tnlCursor += count * units;
     ++sTnlDraws;
@@ -1603,6 +1686,7 @@ void oot_ps3_rsx_take_tnl_stats(unsigned int* tnlDraws, unsigned int* tnlVerts, 
 int oot_ps3_rsx_copy_fb(int fb) {
     GpuTexture* t;
     uint32_t bytes, srcOffset, x, y;
+    Ps3TnlCacheInvalidate();
     if (!prepared || !ctx || fb < 0 || fb >= MAX_FB_TEXTURES || !frameWidth || !frameHeight) return 0;
     t = &sFbTextures[fb];
     bytes = frameWidth * frameHeight * 4U;
@@ -1673,6 +1757,7 @@ int oot_ps3_rsx_copy_fb(int fb) {
  * there is drawn over afterwards (the pause background covers the screen). */
 void oot_ps3_rsx_clear(int color, int depth);
 int oot_ps3_rsx_set_target(int fb, uint32_t width, uint32_t height) {
+    Ps3TnlCacheInvalidate();
     if (!prepared || !ctx || !frameWidth || fb == sTargetFb) return 1;
     if (sTargetFb >= 0) {
         const int done = sTargetFb;
@@ -1707,6 +1792,7 @@ void oot_ps3_rsx_clear(int color, int depth) {
 }
 
 void oot_ps3_rsx_end(void) {
+    Ps3TnlCacheInvalidate();
     if (!prepared) return;
     if (sTargetFb >= 0) oot_ps3_rsx_set_target(-1, 0, 0); /* never present with a texture bound as target */
     sFrameFence[frameIndex] = fence_submit();
