@@ -675,6 +675,13 @@ gi_wrap_flags=()
         echo "void __wrap_${gi_symbol}(void) {}"
         gi_wrap_flags+=("-Wl,--wrap=${gi_symbol}")
     done < <("$NM_BIN" "$gi_hooks_object" | awk '$2=="D" && $3 ~ /^GameInteractor_Execute/ {print $3}' | sort -u)
+    # Registering a hook would insert into those unbuilt registries (null read: the
+    # first pause inside a dungeon crashed in GameInteractor_RegisterOnAssetAltChange).
+    while read -r gi_symbol; do
+        echo "void __wrap_${gi_symbol}(void* fn);"
+        echo "void __wrap_${gi_symbol}(void* fn) { (void)fn; }"
+        gi_wrap_flags+=("-Wl,--wrap=${gi_symbol}")
+    done < <("$NM_BIN" "$gi_hooks_object" | awk '$2=="D" && $3 ~ /^GameInteractor_Register/ {print $3}' | sort -u)
     # Per-actor "should" hooks walk the same unbuilt registries: always allow the
     # vanilla behavior, like the global GameInteractor_Should wrap.
     for gi_symbol in GameInteractor_ShouldActorInit GameInteractor_ShouldActorUpdate GameInteractor_ShouldActorDestroy; do
