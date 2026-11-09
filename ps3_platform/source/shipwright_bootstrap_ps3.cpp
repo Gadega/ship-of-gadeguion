@@ -418,6 +418,7 @@ void oot_ps3_watchdog_kick(void);
 unsigned int oot_ps3_vblank_count(void); // rsx_screen.c
 void oot_ps3_screen_set_vsync(int on);    // rsx_screen.c
 void oot_ps3_flip_take_hist(unsigned int hist[4], unsigned int* maxGap); // rsx_screen.c
+void oot_ps3_tri_fast_stats(unsigned int* fast, unsigned int* full);     // interpreter.cpp
 void oot_ps3_rsx_draw_counters(unsigned long long* gpuWaitUs, unsigned int* texUploads,
                                unsigned long long* texUploadUs); // fast3d_rsx_ps3.c
 void oot_ps3_heap_check(int maxReports, int fromWatchdog); // ps3_heap_guard.c
@@ -640,10 +641,13 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
                         unsigned int combHits = 0, combMisses = 0;
                         oot_ps3_rsx_take_tnl_stats(&tnlDraws, &tnlVerts, &cpuDraws, &vpSwitches, &constVec4,
                                                    &combHits, &combMisses);
+                        unsigned int triFast = 0, triFull = 0;
+                        oot_ps3_tri_fast_stats(&triFast, &triFull);
                         snprintf(line, sizeof(line),
                                  "graph: Play tnl/64 updates gpuDraws=%u gpuVerts=%u cpuDraws=%u vpSwitches=%u "
-                                 "constVec4=%u comb hit/miss=%u/%u",
-                                 tnlDraws, tnlVerts, cpuDraws, vpSwitches, constVec4, combHits, combMisses);
+                                 "constVec4=%u comb hit/miss=%u/%u triangles fast/full=%u/%u",
+                                 tnlDraws, tnlVerts, cpuDraws, vpSwitches, constVec4, combHits, combMisses, triFast,
+                                 triFull);
                         oot_ps3_early_trace(line);
                     }
                     sReportDrawn = sReportSkipped = sReportResync = 0;
