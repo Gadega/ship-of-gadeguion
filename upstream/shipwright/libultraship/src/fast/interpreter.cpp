@@ -2139,6 +2139,18 @@ static int Ps3TnlCaptureContext(Interpreter* g) {
         for (int i = 0; i < c.numDir; i++) g->CalculateNormalDir(&rsp->current_lights[i].l, c.coeff[i]);
         g->CalculateNormalDir(&rsp->lookat[0], c.lookat[0]);
         g->CalculateNormalDir(&rsp->lookat[1], c.lookat[1]);
+        // A light with direction (0,0,0) (OoT's night settings use them) normalises to
+        // NaN. The CPU path skips it ("intensity > 0" is false for NaN); in the vertex
+        // program the real RSX keeps the NaN through max(), so the whole vertex came out
+        // black (RPCS3 drops it). No contribution, as on the CPU path.
+        for (int i = 0; i < c.numDir; i++)
+            for (int j = 0; j < 3; j++)
+                if (!(c.coeff[i][j] == c.coeff[i][j]) || c.coeff[i][j] > 2.0f || c.coeff[i][j] < -2.0f)
+                    c.coeff[i][0] = c.coeff[i][1] = c.coeff[i][2] = 0.0f;
+        for (int i = 0; i < 2; i++)
+            for (int j = 0; j < 3; j++)
+                if (!(c.lookat[i][j] == c.lookat[i][j]) || c.lookat[i][j] > 2.0f || c.lookat[i][j] < -2.0f)
+                    c.lookat[i][0] = c.lookat[i][1] = c.lookat[i][2] = 0.0f;
     }
     sTnlLastKey = key;
     sTnlLastCtx = sTnlCtxCount++;
