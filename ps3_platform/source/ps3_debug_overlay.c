@@ -47,6 +47,8 @@ int oot_ps3_tnl_requested(void);
 void oot_ps3_tnl_set_requested(int on);
 int oot_ps3_render_thread_enabled(void);          /* shipwright_bootstrap_ps3.cpp */
 void oot_ps3_render_thread_set_enabled(int on);
+int oot_ps3_tri_fast_enabled(void);             /* interpreter.cpp */
+void oot_ps3_tri_fast_set_enabled(int on);
 int oot_ps3_rsx_overlay_upload(const uint8_t* rgba, uint32_t width, uint32_t height);
 const uint32_t* oot_ps3_rsx_capture_frame(uint32_t* width, uint32_t* height);
 void oot_ps3_rsx_set_depth(int test, int write);
@@ -160,7 +162,7 @@ static void Rasterize(void) {
 }
 
 /* ---- pages ---- */
-enum { ITEM_HUD, ITEM_WARP, ITEM_TRACE, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
+enum { ITEM_HUD, ITEM_WARP, ITEM_TRACE, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_TRIFAST, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
 
 /* Resolution: native by default, USRDIR/res720 forces 720p (rsx_screen.c, read at boot). */
 static int sRes720 = -1;
@@ -196,6 +198,7 @@ static void BuildMain(void) {
     static const char* const kLabels[ITEM_COUNT] = {
         "Performance HUD while playing", "Warp to area...", "Trace files (bug reports)", "Frame rate",
         "Resolution (after restart)", "GPU vertex path (experimental)", "Render thread (game + draw in parallel)",
+        "Triangle fast path (GPU path)",
         "Mark this moment in the trace",
         "Take screenshot", "Close menu",
     };
@@ -222,6 +225,7 @@ static void BuildMain(void) {
                 snprintf(value, sizeof(value), "%s", kTnl[mode >= 0 && mode < 7 ? mode : 0]);
             } break;
             case ITEM_THREAD: snprintf(value, sizeof(value), "[%s]", oot_ps3_render_thread_enabled() ? "ON" : "OFF"); break;
+            case ITEM_TRIFAST: snprintf(value, sizeof(value), "[%s]", oot_ps3_tri_fast_enabled() ? "ON" : "OFF"); break;
             default: break;
         }
         Line(6 + i, i == sSel ? COL_SELECT : COL_TEXT, "%s %-40s %s", i == sSel ? ">" : " ", kLabels[i], value);
@@ -346,6 +350,11 @@ static void Activate(void) {
             oot_ps3_tnl_set_requested((oot_ps3_tnl_requested() + 1) % 7);
             break;
         case ITEM_THREAD: oot_ps3_render_thread_set_enabled(!oot_ps3_render_thread_enabled()); break;
+        case ITEM_TRIFAST:
+            oot_ps3_tri_fast_set_enabled(!oot_ps3_tri_fast_enabled());
+            oot_ps3_early_trace(oot_ps3_tri_fast_enabled() ? "graph: Play triangle fast path ON (debug menu)"
+                                                            : "graph: Play triangle fast path OFF (debug menu)");
+            break;
         case ITEM_MARK:
             if (!oot_ps3_trace_enabled()) oot_ps3_trace_set_enabled(1);
             ++sMarkCount;

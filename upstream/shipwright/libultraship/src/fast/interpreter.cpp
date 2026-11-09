@@ -160,6 +160,7 @@ static bool sTnlFrame;
 // that isn't a triangle, vertex load, matrix or display-list call).
 static bool sPs3TriFast;
 static unsigned int sPs3TriFastHits, sPs3TriFullPath;
+static int sPs3TriFastEnabled = 1; // debug menu "Triangle fast path"
 static F3DVtx sTnlRaw[MAX_VERTICES + 4];
 static int16_t sTnlVtxCtx[MAX_VERTICES + 4];
 static uint8_t sTnlVtxState[MAX_VERTICES + 4]; // 0 CPU-transformed, 1 raw (GPU), 2 raw + CPU copy made
@@ -2569,7 +2570,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
         if (Ps3CpuRejectOrCull(this, v1, v2, v3)) {
             return;
         }
-    } else if (sPs3TriFast && sTnlKeyValid && sTnlKeyOk) {
+    } else if (sPs3TriFast && sPs3TriFastEnabled && sTnlKeyValid && sTnlKeyOk) {
         // Same render state as the previous GPU-path triangle: the full setup below
         // would arrive at the same draw key, so queue the vertices directly (~2.7 us of
         // state work per triangle saved; ~2300 triangles per draw in Kokiri Forest).
@@ -6470,6 +6471,12 @@ extern "C" void gfx_unregister_fb_texture(const void* cpuAddr) {
 
 #ifdef __PS3__
 // GPU-path triangles that took the fast path / the full setup since the last call.
+extern "C" int oot_ps3_tri_fast_enabled(void) {
+    return Fast::sPs3TriFastEnabled;
+}
+extern "C" void oot_ps3_tri_fast_set_enabled(int on) {
+    Fast::sPs3TriFastEnabled = on ? 1 : 0;
+}
 extern "C" void oot_ps3_tri_fast_stats(unsigned int* fast, unsigned int* full) {
     *fast = Fast::sPs3TriFastHits;
     *full = Fast::sPs3TriFullPath;
