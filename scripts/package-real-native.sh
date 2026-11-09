@@ -55,8 +55,8 @@ if ! strings "$SOURCE_ELF" | grep -F '/dev_usb000/oot_ps3_v48_audio_probe_boot.t
     echo 'STOP: native ELF lacks the USB boot trace and translucent title fade; refusing stale ELF.'
     exit 2
 fi
-if ! strings "$SOURCE_ELF" | grep -F 'gfx-process: before isolated video startup' >/dev/null; then
-    echo 'STOP: native ELF does not contain the isolated-video gfx-process marker.'
+if ! strings "$SOURCE_ELF" | grep -F 'graph: render thread started (draws in parallel)' >/dev/null; then
+    echo 'STOP: native ELF does not contain the render-thread marker.'
     exit 2
 fi
 if ! strings "$SOURCE_ELF" | grep -F 'gfx-process: before native Fast3D display-list draw' >/dev/null ||

@@ -458,15 +458,10 @@ void oot_ps3_last_update_draws(unsigned long long drawUs[3], unsigned int* drawn
     *skipped = sLastSkipped;
 }
 
-void Graph_ProcessGfxCommands(Gfx* commands) {
-    oot_ps3_poll_exit();
-    (void)commands;
-    oot_ps3_early_trace("gfx-process: entered");
-    oot_ps3_early_trace("gfx-process: before isolated video startup");
-    const int videoReady = oot_ps3_shipwright_video_start();
-    oot_ps3_early_trace(videoReady ? "gfx-process: isolated video startup succeeded" :
-                                     "gfx-process: isolated video startup failed");
-    if (videoReady) {
+// Draws one game update (20 Hz): 1-3 paced draws of its display list. Runs on the
+// render thread (or inline on the game thread when the render thread is off).
+// Returns false if nothing could be drawn.
+static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
         oot_ps3_early_trace("gfx-process: before native Fast3D display-list draw");
         {
             // Frame pacing on the display's vblanks (rsx_screen.c counts them; 59.94 Hz).
@@ -481,7 +476,6 @@ void Graph_ProcessGfxCommands(Gfx* commands) {
             static bool sSlotStarted = false;
             static unsigned int sReportTicks = 0, sReportDrawn = 0, sReportSkipped = 0, sReportResync = 0;
             static unsigned long long sReportRenderUs = 0, sReportWaitUs = 0, sReportMaxDrawUs = 0;
-            const bool interpolating = oot_ps3_target_fps() >= 60 && FrameInterpolation_Ps3TakeRecorded() != 0;
             const bool unlocked = oot_ps3_frame_mode() == 1;
             {
                 static int sVsyncApplied = -1;
@@ -515,7 +509,7 @@ void Graph_ProcessGfxCommands(Gfx* commands) {
                 }
                 sTickStart += 50000ULL;
                 oot_ps3_early_trace("gfx-process: completed");
-                return;
+                return true;
             }
             unsigned int vNow = oot_ps3_pacing_vblank();
             if (!sSlotStarted || static_cast<int>(vNow - sSlotBase) > 3 || static_cast<int>(sSlotBase - vNow) > 6) {
@@ -584,9 +578,122 @@ void Graph_ProcessGfxCommands(Gfx* commands) {
                 oot_ps3_early_trace("gfx-process: native Fast3D display-list frame presented");
                 ++gFrame;
                 oot_ps3_early_trace("gfx-process: completed");
-                return;
+                return true;
             }
         }
+        return false;
+}
+
+// ---- Render thread -------------------------------------------------------------
+// The N64 drew a frame on the RSP/RDP while the CPU already ran the next game update;
+// OoT keeps two display-list pools for that. Here the render thread draws update N
+// (Fast3D + RSX, ~3 x 13 ms) while the game thread runs update N+1 on the other PPU
+// hardware thread. The game thread hands over at Graph_ProcessGfxCommands: it waits
+// until the previous update has been drawn (the pool it is about to reuse is free
+// again), publishes the frame-interpolation recordings and posts the display list.
+// The idle semaphore is a token: whoever holds it may touch the renderer.
+int oot_ps3_thread_start(void (*entry)(void*), void* arg, int priority, unsigned int stackBytes, const char* name);
+unsigned int oot_ps3_sem_create(int initial, const char* name);
+void oot_ps3_sem_wait(unsigned int sem);
+void oot_ps3_sem_post(unsigned int sem);
+void FrameInterpolation_Ps3Publish(void);
+static unsigned int sRenderJobSem, sRenderIdleSem;
+static Gfx* volatile sRenderJobCommands;
+static volatile bool sRenderJobInterpolate;
+static int sRenderThreadState = 0; // 0 not started, 1 running, -1 failed to start
+static int sRenderThreadEnabled = -1; // debug menu; USRDIR/render_thread_off
+static void Ps3RenderThreadEntry(void*) {
+    oot_ps3_early_trace("graph: render thread running");
+    for (;;) {
+        oot_ps3_sem_wait(sRenderJobSem);
+        Ps3DrawUpdate(sRenderJobCommands, sRenderJobInterpolate);
+        oot_ps3_sem_post(sRenderIdleSem);
+    }
+}
+int oot_ps3_render_thread_enabled(void) {
+    if (sRenderThreadEnabled < 0)
+        sRenderThreadEnabled = Ps3FileExists("/dev_hdd0/game/OOTP30048/USRDIR/render_thread_off") ? 0 : 1;
+    return sRenderThreadEnabled;
+}
+void oot_ps3_render_thread_set_enabled(int on) {
+    sRenderThreadEnabled = on ? 1 : 0;
+    remove("/dev_hdd0/game/OOTP30048/USRDIR/render_thread_off");
+    if (!on) {
+        FILE* flag = fopen("/dev_hdd0/game/OOTP30048/USRDIR/render_thread_off", "wb");
+        if (flag != nullptr) fclose(flag);
+    }
+}
+// Waits until the render thread has drawn everything handed to it. For code that frees
+// or changes what the last display list uses (game state teardown, Fast3D calls).
+void oot_ps3_render_sync(void) {
+    if (sRenderThreadState != 1) return;
+    oot_ps3_sem_wait(sRenderIdleSem);
+    oot_ps3_sem_post(sRenderIdleSem);
+}
+// Game code that calls into Fast3D directly (link-time --wrap): wait for the render
+// thread first, Fast3D isn't thread-safe.
+int __real_gfx_create_framebuffer(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height,
+                                  uint8_t resize, bool forceFixedAspect);
+int __wrap_gfx_create_framebuffer(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height,
+                                  uint8_t resize, bool forceFixedAspect) {
+    oot_ps3_render_sync();
+    return __real_gfx_create_framebuffer(width, height, native_width, native_height, resize, forceFixedAspect);
+}
+void __real_gfx_texture_cache_clear(void);
+void __wrap_gfx_texture_cache_clear(void) {
+    oot_ps3_render_sync();
+    __real_gfx_texture_cache_clear();
+}
+
+void Graph_ProcessGfxCommands(Gfx* commands) {
+    oot_ps3_early_trace("gfx-process: entered");
+    const int videoReady = oot_ps3_shipwright_video_start();
+    if (videoReady) {
+        static unsigned long long sLastHandoffUs = 0, sReportWaitUs = 0, sReportLogicUs = 0;
+        static unsigned int sReportHandoffs = 0;
+        const unsigned long long t0 = oot_ps3_microseconds_now();
+        if (sRenderThreadState == 1) oot_ps3_sem_wait(sRenderIdleSem); // previous update drawn
+        const unsigned long long t1 = oot_ps3_microseconds_now();
+        oot_ps3_poll_exit(); // exits only while the renderer is idle
+        const bool interpolating = oot_ps3_target_fps() >= 60 && FrameInterpolation_Ps3TakeRecorded() != 0;
+        if (interpolating) FrameInterpolation_Ps3Publish();
+        if (sRenderThreadState == 0 && oot_ps3_render_thread_enabled()) {
+            sRenderJobSem = oot_ps3_sem_create(0, "ootjob");
+            sRenderIdleSem = oot_ps3_sem_create(0, "ootidle"); // token held by this thread now
+            sRenderThreadState = sRenderJobSem != 0 && sRenderIdleSem != 0 &&
+                                         oot_ps3_thread_start(Ps3RenderThreadEntry, nullptr, 1000, 1024U * 1024U,
+                                                              "oot-render")
+                                     ? 1
+                                     : -1;
+            oot_ps3_early_trace(sRenderThreadState == 1 ? "graph: render thread started (draws in parallel)"
+                                                        : "graph: render thread FAILED to start; drawing inline");
+        }
+        if (sRenderThreadState == 1 && oot_ps3_render_thread_enabled()) {
+            sRenderJobCommands = commands;
+            sRenderJobInterpolate = interpolating;
+            __sync_synchronize();
+            oot_ps3_sem_post(sRenderJobSem); // the render thread returns the token when done
+        } else {
+            Ps3DrawUpdate(commands, interpolating);
+            if (sRenderThreadState == 1) oot_ps3_sem_post(sRenderIdleSem);
+        }
+        if (sLastHandoffUs != 0) {
+            sReportWaitUs += t1 - t0;
+            sReportLogicUs += t0 > sLastHandoffUs ? t0 - sLastHandoffUs : 0;
+        }
+        sLastHandoffUs = oot_ps3_microseconds_now();
+        if (++sReportHandoffs % 64U == 0U) {
+            char line[160];
+            snprintf(line, sizeof(line),
+                     "graph: Play render-thread/64 updates on=%d game=%llu us waitForDraw=%llu us",
+                     sRenderThreadState == 1 && oot_ps3_render_thread_enabled() ? 1 : 0, sReportLogicUs,
+                     sReportWaitUs);
+            oot_ps3_early_trace(line);
+            sReportWaitUs = sReportLogicUs = 0;
+        }
+        return;
+    }
+    {
         oot_ps3_early_trace("gfx-process: native Fast3D unavailable; title fallback");
         OotPs3TitleRect rects[64] = {};
         size_t rectCount = 0;

@@ -419,6 +419,15 @@ struct Resource {
  * containers therefore cannot live as ordinary namespace globals.  Build
  * them explicitly on first use, after the PS3 C/C++ runtime is operational.
  */
+extern "C" void oot_ps3_bridge_lock(void);   // ps3_early_entry.c (recursive)
+extern "C" void oot_ps3_bridge_unlock(void);
+struct BridgeLock {
+    BridgeLock() { oot_ps3_bridge_lock(); }
+    ~BridgeLock() { oot_ps3_bridge_unlock(); }
+    BridgeLock(const BridgeLock&) = delete;
+    BridgeLock& operator=(const BridgeLock&) = delete;
+};
+
 template <typename T>
 T& LazyObject() {
     alignas(T) static unsigned char storage[sizeof(T)] = {};
@@ -431,7 +440,10 @@ T& LazyObject() {
 }
 
 using ArchiveList = std::vector<Archive>;
-using ResourceList = std::vector<Resource>;
+// A deque: loading a resource never moves the ones already loaded, so a Resource* stays
+// valid while the other thread loads more (the render thread draws while the game
+// thread runs the next update; both load through here under the bridge lock).
+using ResourceList = std::deque<Resource>;
 using VersionList = std::vector<uint32_t>;
 
 ArchiveList& Archives() { return LazyObject<ArchiveList>(); }
@@ -582,6 +594,7 @@ bool IndexArchive(const char* path, Archive* archive) {
 }
 
 const ZipEntry* FindEntry(const Archive& archive, uint64_t hash) {
+    BridgeLock lock; // the index is built on first use
     if (archive.index.size() != archive.entries.size()) {
         archive.index.clear();
         archive.index.reserve(archive.entries.size());
@@ -1188,6 +1201,7 @@ void Initialize() {
 }
 
 Resource* LoadHash(uint64_t hash, const char* requestedName = nullptr) {
+    BridgeLock lock;
     ResourceList& resources = Resources();
     ArchiveList& archives = Archives();
     const bool titleProbe = requestedName != nullptr &&
@@ -1930,7 +1944,7 @@ extern "C" int oot_ps3_install_selected_room_mesh(PlayState* play) {
 }
 
 extern "C" void InitOTR(int argc, char* argv[]) { (void)argc; (void)argv; Initialize(); }
-extern "C" void DeinitOTR(void) { Resources().clear(); Archives().clear(); Versions().clear(); sInitialized = false; }
+extern "C" void DeinitOTR(void) { BridgeLock lock; Resources().clear(); Archives().clear(); Versions().clear(); sInitialized = false; }
 extern "C" uint32_t IsResourceManagerLoaded(void) { Initialize(); return !Archives().empty(); }
 extern "C" uint64_t ResourceGetCrcByName(const char* name) { const std::string p = Normalize(name); return ShipwrightProbe::ShipCrc64Name(p.c_str()); }
 extern "C" const char* ResourceGetNameByCrc(uint64_t crc) { Initialize(); for (const Archive& a : Archives()) { const ZipEntry* e = FindEntry(a, crc); if (e) return e->name.c_str(); } return nullptr; }
@@ -1969,10 +1983,10 @@ extern "C" void ResourceLoadDirectoryAsync(const char* name) { ResourceLoadDirec
 extern "C" void ResourceDirtyDirectory(const char* name) { (void)name; }
 extern "C" void ResourceDirtyByName(const char* name) { (void)name; }
 extern "C" void ResourceDirtyByCrc(uint64_t crc) { (void)crc; }
-extern "C" void ResourceUnloadByName(const char* name) { const uint64_t hash = ResourceGetCrcByName(name); ResourceList& r = Resources(); r.erase(std::remove_if(r.begin(), r.end(), [hash](const Resource& v) { return v.hash == hash; }), r.end()); sResourceIndexStale = true; }
-extern "C" void ResourceUnloadByCrc(uint64_t crc) { ResourceList& r = Resources(); r.erase(std::remove_if(r.begin(), r.end(), [crc](const Resource& v) { return v.hash == crc; }), r.end()); }
+extern "C" void ResourceUnloadByName(const char* name) { BridgeLock lock; const uint64_t hash = ResourceGetCrcByName(name); ResourceList& r = Resources(); r.erase(std::remove_if(r.begin(), r.end(), [hash](const Resource& v) { return v.hash == hash; }), r.end()); sResourceIndexStale = true; }
+extern "C" void ResourceUnloadByCrc(uint64_t crc) { BridgeLock lock; ResourceList& r = Resources(); r.erase(std::remove_if(r.begin(), r.end(), [crc](const Resource& v) { return v.hash == crc; }), r.end()); }
 extern "C" void ResourceUnloadDirectory(const char* name) { (void)name; }
-extern "C" void ResourceClearCache(void) { Resources().clear(); }
+extern "C" void ResourceClearCache(void) { BridgeLock lock; Resources().clear(); }
 extern "C" void ResourceGetGameVersions(uint32_t* versions, size_t capacity, size_t* count) { Initialize(); VersionList& v = Versions(); if (count) *count = v.size(); if (versions) for (size_t i = 0; i < std::min(capacity, v.size()); ++i) versions[i] = v[i]; }
 extern "C" uint32_t ResourceHasGameVersion(uint32_t hash) { Initialize(); VersionList& v = Versions(); return std::find(v.begin(), v.end(), hash) != v.end(); }
 

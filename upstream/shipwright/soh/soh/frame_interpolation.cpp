@@ -471,6 +471,20 @@ struct InterpolateCtx {
 
 } // anonymous namespace
 
+#ifdef __PS3__
+// Constructed on first use (C++ static constructors don't run on PS3).
+static Recording& Ps3RenderPrevious() {
+    alignas(Recording) static unsigned char storage[sizeof(Recording)];
+    static Recording* r = new (storage) Recording();
+    return *r;
+}
+static Recording& Ps3RenderCurrent() {
+    alignas(Recording) static unsigned char storage[sizeof(Recording)];
+    static Recording* r = new (storage) Recording();
+    return *r;
+}
+#endif
+
 unordered_map<Mtx*, MtxF> FrameInterpolation_Interpolate(float step) {
 #ifdef __PS3__
     const unsigned long long ps3T0 = oot_ps3_microseconds_now();
@@ -478,7 +492,13 @@ unordered_map<Mtx*, MtxF> FrameInterpolation_Interpolate(float step) {
     InterpolateCtx ctx;
     ctx.step = step;
     ctx.w = 1.0f - step;
+#ifdef __PS3__
+    // The render thread interpolates the two recordings handed over with the frame
+    // (FrameInterpolation_Ps3Publish) while the game thread records the next one.
+    ctx.interpolate_branch(&Ps3RenderPrevious().root_path, &Ps3RenderCurrent().root_path);
+#else
     ctx.interpolate_branch(&previous_recording.root_path, &current_recording.root_path);
+#endif
 #ifdef __PS3__
     sPs3FiInterpUs += oot_ps3_microseconds_now() - ps3T0;
 #endif
@@ -816,6 +836,18 @@ extern "C" void FrameInterpolation_Ps3Init(void) {
 }
 
 // 1 if Play_Draw recorded this game update (only Play records); clears the flag.
+// Game thread, at the frame handoff while the render thread is idle: the update just
+// recorded becomes the render thread's "current", the one before it "previous"
+// (freeing the older one). The game thread then records into an empty recording.
+extern "C" void FrameInterpolation_Ps3Publish(void) {
+    FrameInterpolation_Ps3Init();
+    Ps3RenderPrevious() = std::move(Ps3RenderCurrent());
+    Ps3RenderCurrent() = std::move(current_recording);
+    current_recording = {};
+    current_path.clear();
+    current_path.push_back(&current_recording.root_path);
+}
+
 extern "C" int FrameInterpolation_Ps3TakeRecorded(void) {
     const int recorded = sPs3RecordedThisTick;
     sPs3RecordedThisTick = 0;

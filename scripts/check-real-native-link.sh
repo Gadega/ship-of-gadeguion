@@ -693,7 +693,7 @@ echo "GameInteractor executor hooks wrapped: ${#gi_wrap_flags[@]}"
 
 if ! "$CXX_BIN" -mcpu=cell -Wl,--gc-sections -Wl,-Map,"$OUT/oot-native.map" \
     -L"$libdir" -L"$sdk_libdir" -o "$OUT/oot-native.elf" "${final_link_objects[@]}" \
-    -Wl,--wrap=gcmInitBodyEx -Wl,--wrap=GameInteractor_Should -Wl,--wrap=__malloc_lock -Wl,--wrap=__malloc_unlock -Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=calloc -Wl,--wrap=realloc "${gi_wrap_flags[@]}" "$OUT/objects/ps3_gi_noop.o" \
+    -Wl,--wrap=gcmInitBodyEx -Wl,--wrap=gfx_create_framebuffer -Wl,--wrap=gfx_texture_cache_clear -Wl,--wrap=GameInteractor_Should -Wl,--wrap=__malloc_lock -Wl,--wrap=__malloc_unlock -Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=calloc -Wl,--wrap=realloc "${gi_wrap_flags[@]}" "$OUT/objects/ps3_gi_noop.o" \
     -lrsx -lgcm_sys -lio -lsysutil -laudio -lrt "$OUT/objects/ps3_ctor_mid105.o" \
     -llv2 -lm >"$OUT/logs/final-link.log" 2>&1; then
     echo 'FINAL LINK: BLOCKED'

@@ -20,6 +20,7 @@ void oot_ps3_trace_full_detail(void);
 s32 Camera_Ps3OOBTimer(void);
 s32 oot_ps3_audio_is_ready(void);
 void oot_ps3_audio_kick(void);
+void oot_ps3_render_sync(void); // shipwright_bootstrap_ps3.cpp (render thread)
 void oot_ps3_audio_lock(void);
 void oot_ps3_audio_unlock(void);
 static unsigned long long sPs3UpdAcc, sPs3GfxAcc, sPs3ResAcc;
@@ -1028,6 +1029,11 @@ static void RunFrame() {
     ps3NextGameState:
 #endif
         GraphPs3Trace("graph: before Graph_GetNextGameState");
+#ifdef __PS3__
+        // The render thread may still be drawing this state's last display list, which
+        // points into the state's memory: let it finish before anything is released.
+        oot_ps3_render_sync();
+#endif
         runFrameContext.nextOvl = Graph_GetNextGameState(gGameState);
         if (runFrameContext.nextOvl) {
             GraphPs3Trace("graph: next game state selected");

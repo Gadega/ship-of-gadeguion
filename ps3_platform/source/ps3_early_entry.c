@@ -20,6 +20,63 @@ void sysThreadYieldPs3(void) {
     sysThreadYield();
 }
 
+/* Threads and semaphores for files that can't include PS3 system headers (the
+ * render thread in shipwright_bootstrap_ps3.cpp). Semaphore handles are LV2 ids. */
+#include <sys/sem.h>
+int oot_ps3_thread_start(void (*entry)(void*), void* arg, int priority, unsigned int stackBytes, const char* name) {
+    sys_ppu_thread_t thread;
+    return sysThreadCreate(&thread, entry, arg, priority, stackBytes, 0, (char*)name) == 0;
+}
+unsigned int oot_ps3_sem_create(int initial, const char* name) {
+    sys_sem_attr_t attr;
+    sys_sem_t sem = 0;
+    memset(&attr, 0, sizeof(attr));
+    attr.attr_protocol = SYS_SEM_ATTR_PROTOCOL;
+    attr.attr_pshared = SYS_SEM_ATTR_PSHARED;
+    strncpy(attr.name, name, sizeof(attr.name) - 1);
+    if (sysSemCreate(&sem, &attr, initial, 1) != 0) return 0;
+    return sem;
+}
+void oot_ps3_sem_wait(unsigned int sem) {
+    sysSemWait(sem, 0);
+}
+void oot_ps3_sem_post(unsigned int sem) {
+    sysSemPost(sem, 1);
+}
+
+/* The resource bridge's lock (both the game thread and the render thread load
+ * resources). Recursive, owned by the PPU thread pointer (r13); a spin lock
+ * because the bridge is entered hundreds of times per frame and is almost never
+ * contended (a system call each time would cost more than the lookup). */
+static volatile unsigned long long sBridgeOwner;
+static unsigned int sBridgeDepth;
+static inline unsigned long long Ps3ThreadToken(void) {
+    unsigned long long r13;
+    __asm__ volatile("mr %0, 13" : "=r"(r13));
+    return r13;
+}
+void oot_ps3_bridge_lock(void) {
+    const unsigned long long me = Ps3ThreadToken();
+    int spins = 0;
+    if (sBridgeOwner == me) {
+        ++sBridgeDepth;
+        return;
+    }
+    while (!__sync_bool_compare_and_swap(&sBridgeOwner, 0ULL, me)) {
+        if (++spins > 64) {
+            sysThreadYield();
+            spins = 0;
+        }
+    }
+    sBridgeDepth = 1;
+}
+void oot_ps3_bridge_unlock(void) {
+    if (--sBridgeDepth == 0) {
+        __sync_synchronize();
+        sBridgeOwner = 0;
+    }
+}
+
 extern int oot_shipwright_main(int argc, char* argv[]);
 extern int oot_ps3_shipwright_video_start(void);
 extern void oot_ps3_audio_shutdown(void);
