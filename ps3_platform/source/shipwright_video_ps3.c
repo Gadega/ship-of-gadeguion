@@ -14,6 +14,7 @@
 static OotPs3Screen sScreen;
 static int sReady;
 extern void oot_ps3_early_trace(const char* message);
+void oot_ps3_trace_thread_steps(char* out, unsigned int size); /* ps3_early_entry.c */
 extern void oot_ps3_early_trace_flush_usb(void);
 static sys_ppu_thread_t sWatchdogThread;
 static int sWatchdogStarted;
@@ -94,6 +95,12 @@ static void VideoProbeWatchdog(void* argument) {
         oot_ps3_audio_debug_state(state, sizeof(state));
         snprintf(line, sizeof(line), "rsx-watchdog: %s", state);
         oot_ps3_early_trace(line);
+        {
+            char steps[640], big[680];
+            oot_ps3_trace_thread_steps(steps, sizeof(steps));
+            snprintf(big, sizeof(big), "rsx-watchdog: last step per thread: %s", steps);
+            oot_ps3_early_trace(big);
+        }
     }
     oot_ps3_heap_check(8, 1);
     oot_ps3_early_trace("rsx-watchdog: exiting to XMB");

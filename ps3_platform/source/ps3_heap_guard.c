@@ -16,7 +16,7 @@
  * Release builds leave it off (OOT_PS3_HEAP_GUARD 0): the wrappers pass straight
  * through to newlib. Build with -DOOT_PS3_HEAP_GUARD=1 to hunt heap corruption. */
 #ifndef OOT_PS3_HEAP_GUARD
-#define OOT_PS3_HEAP_GUARD 0
+#define OOT_PS3_HEAP_GUARD 1 /* TEMPORARY: render-thread corruption hunt (2026-11-08) */
 #endif
 
 #include <stddef.h>
@@ -70,7 +70,7 @@ static GuardDamage sFreeDamage[8];
  * free. A write into one (use after free) changes the pattern; it is found when the
  * block leaves the quarantine or by a scan, and it can no longer corrupt the heap. */
 #define QUARANTINE_ENTRIES 8192
-#define QUARANTINE_MAX_BYTES (24U * 1024U * 1024U)
+#define QUARANTINE_MAX_BYTES (8U * 1024U * 1024U)
 #define QUARANTINE_MAX_BLOCK (1024U * 1024U)
 typedef struct {
     unsigned char* user;

@@ -334,6 +334,31 @@ void oot_ps3_lock_debug_state(char* out, unsigned size) {
 /* The last message passed to the tracer, kept even when the filters below drop
  * it, so the stall watchdog can report where the game stopped. */
 static char sPs3LastTrace[192];
+/* The last message per thread (first 4 threads that trace), for the watchdog: with
+ * the render thread the global "last trace" only shows whichever thread wrote last. */
+#define TRACE_THREAD_SLOTS 4
+static volatile unsigned long long sThreadSlotToken[TRACE_THREAD_SLOTS];
+static char sThreadSlotTrace[TRACE_THREAD_SLOTS][128];
+static void TraceThreadSlot(const char* message, unsigned int n) {
+    const unsigned long long me = Ps3ThreadToken();
+    unsigned int i;
+    for (i = 0; i < TRACE_THREAD_SLOTS; ++i) {
+        if (sThreadSlotToken[i] == me) break;
+        if (sThreadSlotToken[i] == 0 && __sync_bool_compare_and_swap(&sThreadSlotToken[i], 0ULL, me)) break;
+    }
+    if (i == TRACE_THREAD_SLOTS) return;
+    if (n > sizeof(sThreadSlotTrace[i]) - 1) n = sizeof(sThreadSlotTrace[i]) - 1;
+    memcpy(sThreadSlotTrace[i], message, n);
+    sThreadSlotTrace[i][n] = '\0';
+}
+void oot_ps3_trace_thread_steps(char* out, unsigned int size) {
+    unsigned int i, used = 0;
+    out[0] = '\0';
+    for (i = 0; i < TRACE_THREAD_SLOTS && used < size; ++i) {
+        if (sThreadSlotToken[i] == 0) continue;
+        used += (unsigned int)snprintf(out + used, size - used, "[%llx] %s  ", sThreadSlotToken[i], sThreadSlotTrace[i]);
+    }
+}
 
 const char* oot_ps3_last_trace(void) {
     return sPs3LastTrace;
@@ -409,6 +434,7 @@ void oot_ps3_early_trace(const char* message) {
             while (n < sizeof(sPs3LastTrace) - 1 && message[n] != '\0') ++n;
             memcpy(sPs3LastTrace, message, n);
             sPs3LastTrace[n] = '\0';
+            TraceThreadSlot(message, n);
         }
     }
     /* Per-actor spawn ladders (~28 lines per actor) made scene loads with many
