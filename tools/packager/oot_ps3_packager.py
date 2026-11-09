@@ -2,8 +2,8 @@
 """Ship of Gadeguion Packager: builds an installable PS3 PKG from the user's own oot.o2r.
 
 The app ships only the port's own files (EBOOT.BIN, PARAM.SFO, ICON0.PNG in payload/).
-An EBOOT.BIN placed next to the program replaces the built-in one (new port builds
-without a new .exe). The XMB icon is drawn from the title logo in the user's oot.o2r.
+A different EBOOT.BIN can be given on the command line with --eboot (testing only).
+The XMB icon is drawn from the title logo in the user's oot.o2r.
 The game data comes from the oot.o2r that Ship of Harkinian generated from the user's
 ROM, is checked here, and is placed in USRDIR of a PKG written on the user's own PC.
 No Nintendo data is included in or distributed with this tool.
@@ -53,17 +53,11 @@ def resource_path(name):
     return os.path.join(base, "payload", name)
 
 
-def program_dir():
-    """Folder of the .exe (or of this script when run with Python)."""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def eboot_path():
-    """An EBOOT.BIN next to the program wins over the built-in one."""
-    beside = os.path.join(program_dir(), "EBOOT.BIN")
-    return beside if os.path.isfile(beside) else resource_path("EBOOT.BIN")
+def eboot_path(override=None):
+    """The built-in EBOOT.BIN, or the file given with --eboot (testing only).
+    An EBOOT.BIN that merely sits next to the program is ignored: an old one left
+    in the Downloads folder silently went into players' packages (v1.1.0 .exe)."""
+    return override if override else resource_path("EBOOT.BIN")
 
 
 def read_versioned(data):
@@ -143,7 +137,7 @@ def check_o2r(path):
     return errors, warnings, info
 
 
-def build(o2r_path, out_path, log, progress):
+def build(o2r_path, out_path, log, progress, eboot_override=None):
     errors, warnings, info = check_o2r(o2r_path)
     for line in info:
         log(line)
@@ -155,9 +149,9 @@ def build(o2r_path, out_path, log, progress):
         return False
     log("Reading files...")
     files = {}
-    eboot = eboot_path()
-    if eboot != resource_path("EBOOT.BIN"):
-        log("Using the EBOOT.BIN next to the program: " + eboot)
+    eboot = eboot_path(eboot_override)
+    if eboot_override:
+        log("Using the EBOOT given with --eboot: " + eboot)
     with open(eboot, "rb") as handle:
         files["USRDIR/EBOOT.BIN"] = handle.read()
     with open(resource_path("PARAM.SFO"), "rb") as handle:
@@ -295,9 +289,14 @@ def run_gui():
 
 
 def main():
-    # Command line: oot_ps3_packager.py <oot.o2r> <out.pkg>   (no window)
-    if len(sys.argv) == 3:
-        ok = build(sys.argv[1], sys.argv[2], print, lambda value: None)
+    # Command line: oot_ps3_packager.py [--eboot EBOOT.BIN] <oot.o2r> <out.pkg>   (no window)
+    args = sys.argv[1:]
+    eboot_override = None
+    if len(args) >= 2 and args[0] == "--eboot":
+        eboot_override = args[1]
+        args = args[2:]
+    if len(args) == 2:
+        ok = build(args[0], args[1], print, lambda value: None, eboot_override)
         sys.exit(0 if ok else 1)
     run_gui()
 
