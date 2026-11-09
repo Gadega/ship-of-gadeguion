@@ -763,30 +763,34 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
      * (they divide by 2048). */
     static const float kClip[3][4] = { { -0.5f, -0.5f, 0.5f, 1.0f }, { 0.5f, -0.5f, 0.5f, 1.0f }, { 0.0f, 0.5f, 0.5f, 1.0f } };
     static const char* const kNames[8] = {
-        "CPU path (control)", "F relative addressing, cgcomp output as is", "F relative addressing, patched",
-        "G fixed addresses (reference)", "T&L draw path, float records", "T&L draw path, packed records",
-        "T&L white probe (patched)", "C position only (reference)",
+        "CPU path (control)", "T&L float records, colour from the vertex", "T&L packed records, colour from the vertex",
+        "T&L float records, constant white", "T&L packed records, constant white", "T&L white probe, float records",
+        "T&L float records, lit (ambient white)", "C position only (reference)",
     };
-    static const float kIdentity[4][4] = { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 0, 0, 1, 0 }, { 0, 0, 0, 1 } };
-    const unsigned char* const kBlobs[4] = { oot_ps3_rsx_vpo_selftest10raw, oot_ps3_rsx_vpo_selftest10,
-                                             oot_ps3_rsx_vpo_selftest11, oot_ps3_rsx_vpo_selftest7 };
-    static float sConsts[64 * 4];
-    rsxVertexProgram* tp[4];
-    void* tc[4];
+    static float sWhite[64 * 4], sShade[64 * 4], sLit[64 * 4];
+    rsxVertexProgram* tp;
+    void* tc;
     uint32_t bytes, results[8];
     char line[200];
     int v, used;
-    for (v = 0; v < 4; ++v) {
-        tp[v] = (rsxVertexProgram*)kBlobs[v];
-        rsxVertexProgramGetUCode(tp[v], &tc[v], &bytes);
-    }
-    /* T&L draw path constants: clip = (x/2048, y/2048, 0.5, 1), no lighting/fog, k4 = white. */
-    memset(sConsts, 0, sizeof(sConsts));
-    sConsts[24 * 4 + 0] = sConsts[24 * 4 + 1] = sConsts[24 * 4 + 2] = sConsts[24 * 4 + 3] = 1.0f;
-    sConsts[40 * 4 + 0] = 1.0f / 2048.0f;
-    sConsts[41 * 4 + 1] = 1.0f / 2048.0f;
-    sConsts[43 * 4 + 2] = 0.5f;
-    sConsts[43 * 4 + 3] = 1.0f;
+    tp = (rsxVertexProgram*)oot_ps3_rsx_vpo_selftest7;
+    rsxVertexProgramGetUCode(tp, &tc, &bytes);
+    /* T&L draw path constants: clip = (x/2048, y/2048, 0.5, 1), no fog.
+     * sWhite: k4 = white. sShade: k4 = shade (the vertex colour, so a clamped colour
+     * input shows up as black). sLit: shade from lighting with a white ambient light. */
+    memset(sWhite, 0, sizeof(sWhite));
+    sWhite[24 * 4 + 0] = sWhite[24 * 4 + 1] = sWhite[24 * 4 + 2] = sWhite[24 * 4 + 3] = 1.0f;
+    sWhite[40 * 4 + 0] = 1.0f / 2048.0f;
+    sWhite[41 * 4 + 1] = 1.0f / 2048.0f;
+    sWhite[43 * 4 + 2] = 0.5f;
+    sWhite[43 * 4 + 3] = 1.0f;
+    memcpy(sShade, sWhite, sizeof(sShade));
+    memset(sShade + 20 * 4, 0, 5 * 4 * sizeof(float));
+    sShade[20 * 4 + 0] = sShade[21 * 4 + 1] = sShade[22 * 4 + 2] = 1.0f;
+    sShade[24 * 4 + 3] = 1.0f;
+    memcpy(sLit, sShade, sizeof(sLit));
+    sLit[30 * 4 + 0] = sLit[30 * 4 + 1] = sLit[30 * 4 + 2] = 1.0f; /* ambient */
+    sLit[44 * 4 + 0] = 1.0f;                                       /* flags.x = lighting */
     for (v = 0; v < 8; ++v) {
         Ps3SelfTestClear();
         rsxSetDepthTestEnable(ctx, GCM_FALSE);
@@ -805,12 +809,8 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
             sCurrentFp = -1;
             oot_ps3_rsx_set_draw_state(4U, 0xFFFFU, 0xFFFFU, 6U, 4U, 0.0f, packs);
             oot_ps3_rsx_triangles(&vbo[0][0], 6U, 1U, 0U, 0U, 0, 0U, 0);
-        } else if (v == 1 || v == 2) {
-            Ps3RawTestDraw(tp[v - 1], tc[v - 1], kClip, 1, 1, &kIdentity[0][0], 40, 4); /* rows at 40..43 only */
-        } else if (v == 3) {
-            Ps3RawTestDraw(tp[2], tc[2], kClip, 1, 1, &kIdentity[0][0], 0, 4); /* compiled to c[0..3] */
         } else if (v == 7) {
-            Ps3RawTestDraw(tp[3], tc[3], kClip, 1, 1, NULL, 0, 0);
+            Ps3RawTestDraw(tp, tc, kClip, 1, 1, NULL, 0, 0);
         } else {
             static const int16_t kTri[3][2] = { { -1024, -1024 }, { 1024, -1024 }, { 0, 1024 } };
             uint8_t records[3 * 16];
@@ -823,10 +823,12 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
                 memcpy(r + 6, &slot, 2);
                 memcpy(r + 8, tcz, 4);
                 r[12] = r[13] = r[14] = r[15] = 255;
+                if (v == 6) r[12] = r[13] = r[14] = 0; /* normal (0,0,0): ambient only */
             }
-            sTnlDebugMode = v == 6 ? 2 : 1;
+            sTnlDebugMode = v == 5 ? 2 : 1;
             sCurrentVp = -1;
-            oot_ps3_rsx_tnl_draw(records, 3U, sConsts, 1, 40U, 55U, 0U, 0U, 0, 0, 0, v == 4 ? 1 : 0);
+            oot_ps3_rsx_tnl_draw(records, 3U, v <= 2 ? sShade : v == 6 ? sLit : sWhite, 1, 40U, 55U, 0U, 0U, 0, 0, 0,
+                                 (v == 2 || v == 4) ? 0 : 1);
         }
         results[v] = Ps3SelfTestPixel(width, height);
         tnlCursor = 0;
@@ -1532,14 +1534,16 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
     if (floatAttribs) {
         rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0, offset + 0, 48, 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
         rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0, offset + 16, 48, 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, offset + 32, 48, 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX1, 0, offset + 32, 48, 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     } else {
         rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0, offset + 0, 16, 4, 5, GCM_LOCATION_RSX);
         rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0, offset + 8, 16, 2, 5, GCM_LOCATION_RSX);
-        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, offset + 12, 16, 4, 7, GCM_LOCATION_RSX);
+        rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX1, 0, offset + 12, 16, 4, 7, GCM_LOCATION_RSX);
     }
+    /* The colour/normal bytes go in through TEXCOORD1, not COLOR0: the RSX clamps
+     * COLOR inputs to 0..1, and these are 0..255 (and signed normals). */
+    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR1, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX1, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX2, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX3, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX4, 0, 0, 0, 0, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);

@@ -3,7 +3,7 @@
 // through the palette constants; every vertex is plain white (k4 = 1, alpha 1).
 // White shapes = transform and vertex fetch work (the colour part is at fault);
 // nothing = the transform/constants/fetch path is at fault.
-void main(float4 pos : POSITION, float4 tc : TEXCOORD0, float4 cn : COLOR0,
+void main(float4 pos : POSITION, float4 tc : TEXCOORD0, float4 cn : TEXCOORD1,
           uniform float4 C[460],
           out float4 outPosition : POSITION, out float4 outUv : TEXCOORD0,
           out float4 outK0 : TEXCOORD1, out float4 outK1 : TEXCOORD2, out float4 outK2 : TEXCOORD3,

@@ -2,7 +2,7 @@
 // GPU self-test variant of fast3d_ps3_tnl_attrprobe.vcg: same raw-position white output,
 // but it also writes every result the working pass-through program writes (TEXCOORD0..7,
 // COLOR0, COLOR1), so its output mask matches fast3d_ps3.vcg.
-void main(float4 pos : POSITION, float4 tc : TEXCOORD0, float4 cn : COLOR0,
+void main(float4 pos : POSITION, float4 tc : TEXCOORD0, float4 cn : TEXCOORD1,
           out float4 outPosition : POSITION, out float4 outUv : TEXCOORD0,
           out float4 outK0 : TEXCOORD1, out float4 outK1 : TEXCOORD2, out float4 outK2 : TEXCOORD3,
           out float4 outK3 : TEXCOORD4, out float4 outK4 : TEXCOORD5, out float4 outState : TEXCOORD6,

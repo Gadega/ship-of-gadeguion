@@ -4,7 +4,7 @@
 // down), plain white, drawn without depth test or culling. Shapes on screen = the RSX
 // reads the vertex records (the transform constants are at fault); nothing = the
 // vertex records themselves don't arrive.
-void main(float4 pos : POSITION, float4 tc : TEXCOORD0, float4 cn : COLOR0,
+void main(float4 pos : POSITION, float4 tc : TEXCOORD0, float4 cn : TEXCOORD1,
           out float4 outPosition : POSITION, out float4 outUv : TEXCOORD0,
           out float4 outK0 : TEXCOORD1, out float4 outK1 : TEXCOORD2, out float4 outK2 : TEXCOORD3,
           out float4 outK3 : TEXCOORD4, out float4 outK4 : TEXCOORD5, out float4 outState : TEXCOORD6) {

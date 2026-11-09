@@ -22,7 +22,7 @@
 //     +13,14 lookat x / y directions (texgen)
 //     the clip matrix already contains the aspect ratio and the z remap; the raw N64
 //     z for fog is recovered as 2z' - w.
-void main(float4 pos : POSITION, float4 tc : TEXCOORD0, float4 cn : COLOR0,
+void main(float4 pos : POSITION, float4 tc : TEXCOORD0, float4 cn : TEXCOORD1,
           uniform float4 C[460],
           out float4 outPosition : POSITION, out float4 outUv : TEXCOORD0,
           out float4 outK0 : TEXCOORD1, out float4 outK1 : TEXCOORD2, out float4 outK2 : TEXCOORD3,
