@@ -604,7 +604,40 @@ const ZipEntry* FindEntry(const Archive& archive, uint64_t hash) {
     return found != archive.index.end() ? &archive.entries[found->second] : nullptr;
 }
 
+extern "C" const unsigned char* oot_ps3_archive_ram(const char* path, unsigned long long* size); // ps3_early_entry.c
+extern "C" int oot_ps3_archive_preload(const char* path, unsigned long long size);           // ps3_early_entry.c
+// Decompresses one entry from `compressed` (method 0 stored, 8 deflate) and checks its CRC.
+static bool InflateEntry(const ZipEntry& entry, const unsigned char* compressed, std::vector<unsigned char>* output) {
+    if (entry.method == 0) {
+        if (entry.compressedSize != entry.uncompressedSize) return false;
+        output->assign(compressed, compressed + entry.compressedSize);
+    } else if (entry.method == 8) {
+        output->assign(entry.uncompressedSize, 0);
+        const int written = stbi_zlib_decode_noheader_buffer(reinterpret_cast<char*>(output->data()),
+                                                              static_cast<int>(output->size()),
+                                                              reinterpret_cast<const char*>(compressed),
+                                                              static_cast<int>(entry.compressedSize));
+        if (written != static_cast<int>(entry.uncompressedSize)) return false;
+    } else {
+        return false;
+    }
+    return Crc32(output->data(), output->size()) == entry.crc;
+}
+
 bool ReadEntry(const Archive& archive, const ZipEntry& entry, std::vector<unsigned char>* output) {
+    {
+        // The whole archive in RAM (background copy from boot): no hard-drive access.
+        unsigned long long ramSize = 0;
+        const unsigned char* ram = oot_ps3_archive_ram(archive.path.c_str(), &ramSize);
+        if (ram != nullptr && static_cast<unsigned long long>(entry.localOffset) + 30ULL <= ramSize) {
+            const unsigned char* local = ram + entry.localOffset;
+            if (Le32(local) != 0x04034B50U) return false;
+            const unsigned long long dataOffset =
+                static_cast<unsigned long long>(entry.localOffset) + 30ULL + Le16(local + 26) + Le16(local + 28);
+            if (dataOffset + entry.compressedSize > ramSize) return false;
+            return InflateEntry(entry, ram + dataOffset, output);
+        }
+    }
     const int descriptor = open(archive.path.c_str(), O_RDONLY);
     if (descriptor < 0) return false;
     unsigned char local[30];
@@ -617,20 +650,7 @@ bool ReadEntry(const Archive& archive, const ZipEntry& entry, std::vector<unsign
     const bool received = ReadAt(descriptor, dataOffset, compressed.data(), compressed.size());
     close(descriptor);
     if (!received) return false;
-    if (entry.method == 0) {
-        if (entry.compressedSize != entry.uncompressedSize) return false;
-        *output = std::move(compressed);
-    } else if (entry.method == 8) {
-        output->assign(entry.uncompressedSize, 0);
-        const int written = stbi_zlib_decode_noheader_buffer(reinterpret_cast<char*>(output->data()),
-                                                              static_cast<int>(output->size()),
-                                                              reinterpret_cast<const char*>(compressed.data()),
-                                                              static_cast<int>(compressed.size()));
-        if (written != static_cast<int>(entry.uncompressedSize)) return false;
-    } else {
-        return false;
-    }
-    return Crc32(output->data(), output->size()) == entry.crc;
+    return InflateEntry(entry, compressed.data(), output);
 }
 
 std::string Normalize(const char* input) {
@@ -1183,6 +1203,17 @@ void Initialize() {
         if (IndexArchive(path, &archive)) archives.push_back(std::move(archive));
     }
     oot_ps3_early_trace("resource: archive path scan completed");
+    {
+        // Copy the main game archive (the first one found) into RAM in the background.
+        if (!archives.empty()) {
+            const int fd = open(archives.front().path.c_str(), O_RDONLY);
+            if (fd >= 0) {
+                const off_t size = lseek(fd, 0, SEEK_END);
+                close(fd);
+                if (size > 0) oot_ps3_archive_preload(archives.front().path.c_str(), static_cast<unsigned long long>(size));
+            }
+        }
+    }
     oot_ps3_early_trace(archives.empty() ? "resource: no user asset archive found" :
                                           "resource: user asset archive indexed");
     for (const Archive& archive : archives) {

@@ -42,12 +42,7 @@ void Title_Calc(TitleContext* this) {
         this->coverAlpha += this->addAlpha;
         if (this->coverAlpha <= 0) {
             this->coverAlpha = 0;
-#ifdef __PS3__
-            this->addAlpha = 32;
-            TitlePs3Trace("title-calc: fade-in completed; fast fade-out armed");
-#else
             this->addAlpha = 3;
-#endif
         } else if (this->coverAlpha >= 0xFF) {
             this->coverAlpha = 0xFF;
             this->exit = 1;
@@ -248,12 +243,5 @@ void Title_Init(GameState* thisx) {
     this->visibleDuration = 0x3C;
     TitlePs3Trace("title-init: before interactor hook");
     GameInteractor_ExecuteOnZTitleInit(this);
-#ifdef __PS3__
-    // Preserve Title_Calc and Title_Main's real state transition, but finish
-    // both fade directions within the bounded PS3 probe (~26 title frames).
-    this->addAlpha = -32;
-    this->visibleDuration = 10;
-    TitlePs3Trace("title-init: accelerated native fade for Opening handoff");
-#endif
     TitlePs3Trace("title-init: completed");
 }

@@ -30,7 +30,68 @@ void oot_ps3_lock_backoff(unsigned int* spins) {
     usleep(20);
 }
 
-/* Threads and semaphores for files that can't include PS3 system headers (the
+/* The game archive (oot.o2r, ~33 MB) copied into RAM by a background thread at boot.
+ * Every first use of a resource used to open/seek/read/close the file on the hard
+ * drive: a scene change does hundreds of those (50-330 ms hitches). Until the copy is
+ * complete the bridge keeps reading the file; afterwards it reads from memory. Memory
+ * comes from the system (1 MB pages) next to the 64 MB heap, not from the heap. */
+#include <sys/memory.h>
+unsigned long long oot_ps3_microseconds_now(void);
+void oot_ps3_early_trace(const char* message);
+static unsigned char* sArchiveRam;
+static unsigned long long sArchiveRamSize;
+static volatile int sArchiveRamReady;
+static char sArchiveRamPath[256];
+static void ArchiveRamThread(void* argument) {
+    const unsigned long long t0 = oot_ps3_microseconds_now();
+    unsigned long long done = 0;
+    char line[160];
+    int fd = open(sArchiveRamPath, O_RDONLY);
+    (void)argument;
+    if (fd >= 0) {
+        while (done < sArchiveRamSize) {
+            const unsigned long long chunk = sArchiveRamSize - done < (1U << 20) ? sArchiveRamSize - done : (1U << 20);
+            const ssize_t got = read(fd, sArchiveRam + done, (size_t)chunk);
+            if (got <= 0) break;
+            done += (unsigned long long)got;
+        }
+        close(fd);
+    }
+    if (done == sArchiveRamSize) {
+        __sync_synchronize();
+        sArchiveRamReady = 1;
+    }
+    snprintf(line, sizeof(line), "trace: archive %s in RAM: %llu of %llu bytes in %llu ms", sArchiveRamReady ? "loaded" : "FAILED",
+             done, sArchiveRamSize, (oot_ps3_microseconds_now() - t0) / 1000ULL);
+    oot_ps3_early_trace(line);
+    sysThreadExit(0);
+}
+int oot_ps3_archive_preload(const char* path, unsigned long long size) {
+    sys_mem_addr_t address = 0;
+    sys_ppu_thread_t thread;
+    const unsigned long long rounded = (size + 0xFFFFFULL) & ~0xFFFFFULL;
+    if (sArchiveRam != NULL || size == 0 || size > (48ULL << 20) || strlen(path) >= sizeof(sArchiveRamPath)) return 0;
+    if (sysMemoryAllocate(rounded, SYS_MEMORY_PAGE_SIZE_1M, &address) != 0) {
+        oot_ps3_early_trace("trace: archive RAM copy: no system memory; reading from the hard drive");
+        return 0;
+    }
+    sArchiveRam = (unsigned char*)(uintptr_t)address;
+    sArchiveRamSize = size;
+    strcpy(sArchiveRamPath, path);
+    if (sysThreadCreate(&thread, ArchiveRamThread, NULL, 1200, 64 * 1024, 0, "oot-archive") != 0) {
+        oot_ps3_early_trace("trace: archive RAM copy: thread failed");
+        return 0;
+    }
+    return 1;
+}
+/* The archive bytes when the RAM copy of `path` is complete, else NULL. */
+const unsigned char* oot_ps3_archive_ram(const char* path, unsigned long long* size) {
+    if (!sArchiveRamReady || strcmp(path, sArchiveRamPath) != 0) return NULL;
+    *size = sArchiveRamSize;
+    return sArchiveRam;
+}
+
+/* Threads and semaphores for files
  * render thread in shipwright_bootstrap_ps3.cpp). Semaphore handles are LV2 ids. */
 #include <sys/sem.h>
 int oot_ps3_thread_start(void (*entry)(void*), void* arg, int priority, unsigned int stackBytes, const char* name) {
@@ -46,6 +107,9 @@ unsigned int oot_ps3_sem_create(int initial, const char* name) {
     strncpy(attr.name, name, sizeof(attr.name) - 1);
     if (sysSemCreate(&sem, &attr, initial, 1) != 0) return 0;
     return sem;
+}
+void oot_ps3_thread_exit(void) {
+    sysThreadExit(0);
 }
 void oot_ps3_sem_wait(unsigned int sem) {
     sysSemWait(sem, 0);

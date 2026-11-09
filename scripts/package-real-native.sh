@@ -219,8 +219,8 @@ if ! strings "$SOURCE_ELF" | grep -F 'play-update: entered' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'graph: diagnostic real Play frame Graph_Update completed; before RSX draw' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'graph: diagnostic bounded Play sequence completed; exiting to XMB' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'title-main: native fade completed; Opening selected' >/dev/null ||
-   ! strings "$SOURCE_ELF" | grep -F 'title-init: accelerated native fade for Opening handoff' >/dev/null ||
-   ! strings "$SOURCE_ELF" | grep -F 'title-calc: fade-in completed; fast fade-out armed' >/dev/null ||
+   ! true ||
+   ! strings "$SOURCE_ELF" | grep -F 'title-calc: fade-out completed; natural Opening handoff ready' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'title-calc: fade-out completed; natural Opening handoff ready' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'game-update: before state main' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'play-draw: before Scene_Draw' >/dev/null ||

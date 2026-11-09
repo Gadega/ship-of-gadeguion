@@ -671,6 +671,7 @@ unsigned int oot_ps3_sem_create(int initial, const char* name);
 void oot_ps3_sem_wait(unsigned int sem);
 void oot_ps3_sem_post(unsigned int sem);
 void FrameInterpolation_Ps3Publish(void);
+void oot_ps3_save_preload_start(void); // below: save slots read on a background thread
 static unsigned int sRenderJobSem, sRenderIdleSem;
 static Gfx* volatile sRenderJobCommands;
 static volatile bool sRenderJobInterpolate;
@@ -725,6 +726,7 @@ void __wrap_gfx_texture_cache_clear(void) {
 
 void Graph_ProcessGfxCommands(Gfx* commands) {
     oot_ps3_early_trace("gfx-process: entered");
+    oot_ps3_save_preload_start();
     const int videoReady = oot_ps3_shipwright_video_start();
     if (videoReady) {
         static unsigned long long sLastHandoffUs = 0, sReportWaitUs = 0, sReportLogicUs = 0;
@@ -843,8 +845,37 @@ uint16_t OTRGetPixelDepth(float x, float y) { (void)x; (void)y; return 0xFFFFU; 
 void Ctx_ReadSaveFile(uintptr_t address, void* destination, size_t size) { ReadAt(address, destination, size); }
 void Ctx_WriteSaveFile(uintptr_t address, void* source, size_t size) { WriteAt(address, source, size); }
 
-void Save_Init(void) {
+// Reading the three save slots through the PS3 save-data utility takes ~2.5 s each:
+// done on a thread started at the first frame (while the N64 logo plays) instead of
+// as 7.5 s of black screen after it. Save_Init waits for it.
+int oot_ps3_thread_start(void (*entry)(void*), void* arg, int priority, unsigned int stackBytes, const char* name);
+unsigned int oot_ps3_sem_create(int initial, const char* name);
+void oot_ps3_sem_wait(unsigned int sem);
+void oot_ps3_sem_post(unsigned int sem);
+void oot_ps3_thread_exit(void);
+static unsigned int sSaveLoadDone;
+static int sSaveLoadState = 0; // 0 not started, 1 loading on the thread, 2 slots read
+static void Ps3SaveLoadThread(void*) {
     for (int slot = 0; slot < 3; ++slot) LoadMeta(slot);
+    oot_ps3_sem_post(sSaveLoadDone);
+    oot_ps3_thread_exit();
+}
+void oot_ps3_save_preload_start(void) {
+    if (sSaveLoadState != 0) return;
+    sSaveLoadDone = oot_ps3_sem_create(0, "ootsave");
+    if (sSaveLoadDone != 0 && oot_ps3_thread_start(Ps3SaveLoadThread, nullptr, 1100, 256U * 1024U, "oot-saveload")) {
+        sSaveLoadState = 1;
+        oot_ps3_early_trace("trace: save slots loading in the background");
+    }
+}
+void Save_Init(void) {
+    if (sSaveLoadState == 1) {
+        oot_ps3_sem_wait(sSaveLoadDone);
+        sSaveLoadState = 2;
+    } else if (sSaveLoadState != 2) {
+        for (int slot = 0; slot < 3; ++slot) LoadMeta(slot);
+        sSaveLoadState = 2;
+    }
     char line[96];
     snprintf(line, sizeof(line), "trace: save slots found=%d%d%d", gSaveMeta[0].valid, gSaveMeta[1].valid,
              gSaveMeta[2].valid);
