@@ -178,13 +178,24 @@ static void TraceAsyncFlush(void) {
 
 static void TraceAsyncAppend(const char* message) {
     const unsigned int length = TraceLength(message);
-    if (length + 1U > TRACE_ASYNC_BYTES) return;
+    /* "[seconds.milliseconds] " since boot in front of every line: how long things took. */
+    char stamp[24];
+    static unsigned long long sTraceT0;
+    unsigned long long now = oot_ps3_microseconds_now();
+    unsigned int stampLen;
+    if (sTraceT0 == 0) sTraceT0 = now;
+    now -= sTraceT0;
+    stampLen = (unsigned int)snprintf(stamp, sizeof(stamp), "[%llu.%03llu] ", now / 1000000ULL, (now / 1000ULL) % 1000ULL);
+    if (stampLen >= sizeof(stamp)) stampLen = 0;
+    if (length + stampLen + 1U > TRACE_ASYNC_BYTES) return;
     TraceSpinLock(&sTraceAsyncLock);
-    if (sTraceAsyncLen + length + 1U > TRACE_ASYNC_BYTES) {
+    if (sTraceAsyncLen + stampLen + length + 1U > TRACE_ASYNC_BYTES) {
         TraceSpinUnlock(&sTraceAsyncLock);
         TraceAsyncFlush(); /* full: write out now (rare) */
         TraceSpinLock(&sTraceAsyncLock);
     }
+    memcpy(sTraceAsync + sTraceAsyncLen, stamp, stampLen);
+    sTraceAsyncLen += stampLen;
     memcpy(sTraceAsync + sTraceAsyncLen, message, length);
     sTraceAsync[sTraceAsyncLen + length] = '\n';
     sTraceAsyncLen += length + 1U;

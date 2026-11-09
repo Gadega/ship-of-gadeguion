@@ -3711,6 +3711,19 @@ void KaleidoScope_LoadDungeonMap(PlayState* play) {
         mapRightTexModifiedRaw = NULL;
     }
 
+#ifdef __PS3__
+    {
+        extern void oot_ps3_early_trace_flush_usb(void);
+        char line[300];
+        const int idx = R_MAP_TEX_INDEX;
+        const int ok = idx >= 0 && idx + 1 < (int)ARRAY_COUNT(sDungeonMapTexs);
+        snprintf(line, sizeof(line), "graph: Play kaleido-map load index=%d of %d name=%s data=%p", idx,
+                 (int)ARRAY_COUNT(sDungeonMapTexs), ok ? (const char*)sDungeonMapTexs[idx] : "(OUT OF RANGE)",
+                 ok ? ResourceGetDataByName(sDungeonMapTexs[idx]) : NULL);
+        oot_ps3_early_trace(line);
+        oot_ps3_early_trace_flush_usb();
+    }
+#endif
     // Unload original textures to bypass cache result for lookups
     ResourceMgr_UnloadOriginalWhenAltExists(sDungeonMapTexs[R_MAP_TEX_INDEX]);
     ResourceMgr_UnloadOriginalWhenAltExists(sDungeonMapTexs[R_MAP_TEX_INDEX + 1]);
@@ -3813,8 +3826,40 @@ void KaleidoScope_UpdateDungeonMap(PlayState* play) {
 
     osSyncPrintf("ＭＡＰ ＤＭＡ = %d\n", play->interfaceCtx.mapPaletteIndex);
 
+#ifdef __PS3__
+    {
+        // Diagnostics: pausing inside the Deku Tree crashed (RPCS3, 2026-11-08). Written
+        // and flushed immediately so a hard crash keeps them.
+        extern void oot_ps3_early_trace_flush_usb(void);
+        char line[256];
+        snprintf(line, sizeof(line),
+                 "graph: Play kaleido-map update scene=%d texIndex=%d base=%d slot=%d floor=%d mapIndex=%d room=%d",
+                 (int)play->sceneNum, (int)R_MAP_TEX_INDEX, (int)R_MAP_TEX_INDEX_BASE, (int)pauseCtx->dungeonMapSlot,
+                 (int)interfaceCtx->unk_25A, (int)gSaveContext.mapIndex, (int)interfaceCtx->mapRoomNum);
+        oot_ps3_early_trace(line);
+        oot_ps3_early_trace_flush_usb();
+    }
+#endif
     KaleidoScope_LoadDungeonMap(play);
+#ifdef __PS3__
+    {
+        extern void oot_ps3_early_trace_flush_usb(void);
+        char line[256];
+        snprintf(line, sizeof(line), "graph: Play kaleido-map loaded tex0=%s seg0=%p seg1=%p",
+                 interfaceCtx->mapSegmentName[0] ? (const char*)interfaceCtx->mapSegmentName[0] : "(null)",
+                 interfaceCtx->mapSegment[0], interfaceCtx->mapSegment[1]);
+        oot_ps3_early_trace(line);
+        oot_ps3_early_trace_flush_usb();
+    }
+#endif
     Map_SetFloorPalettesData(play, pauseCtx->dungeonMapSlot - 3);
+#ifdef __PS3__
+    {
+        extern void oot_ps3_early_trace_flush_usb(void);
+        oot_ps3_early_trace("graph: Play kaleido-map floor palettes done");
+        oot_ps3_early_trace_flush_usb();
+    }
+#endif
 
     // Copy the map palette values to all pulse palettes
     for (uint8_t i = 0; i < ARRAY_COUNT(interfaceCtx->mapPalettesPulse); i++) {
