@@ -368,7 +368,9 @@ unsigned long long oot_ps3_microseconds_now(void);
 void sysThreadYieldPs3(void); // ps3_early_entry.c (PS3 system headers stay out of here)
 // Frame mode (debug menu "Frame rate"): 0 = 60 fps locked to vsync (frame interpolation),
 // 1 = unlocked (interpolated frames as fast as they render, flips at hsync), 2 = 20 fps
-// (no interpolation). Remembered with USRDIR/fps_unlocked or USRDIR/fps20.
+// (no interpolation), 3 = steady 30 (every other vsync, interpolated), 4 = auto (60, or
+// steady 30 while 3 draws per update don't fit). Remembered with USRDIR/fps_unlocked,
+// fps20, fps30 or fps_auto.
 static int sFrameMode = -1;
 static bool Ps3FileExists(const char* path) {
     FILE* f = fopen(path, "rb");
@@ -380,22 +382,33 @@ int oot_ps3_frame_mode(void) {
     if (sFrameMode < 0) {
         sFrameMode = Ps3FileExists("/dev_hdd0/game/OOTP30048/USRDIR/fps20")          ? 2
                      : Ps3FileExists("/dev_hdd0/game/OOTP30048/USRDIR/fps_unlocked") ? 1
+                     : Ps3FileExists("/dev_hdd0/game/OOTP30048/USRDIR/fps30")        ? 3
+                     : Ps3FileExists("/dev_hdd0/game/OOTP30048/USRDIR/fps_auto")     ? 4
                                                                                        : 0;
         oot_ps3_early_trace(sFrameMode == 0   ? "graph: frame rate 60 (vsync, frame interpolation)"
                             : sFrameMode == 1 ? "graph: frame rate unlocked (USRDIR/fps_unlocked)"
+                            : sFrameMode == 3 ? "graph: frame rate steady 30 (USRDIR/fps30)"
+                            : sFrameMode == 4 ? "graph: frame rate auto 60/30 (USRDIR/fps_auto)"
                                               : "graph: frame rate 20, no interpolation (USRDIR/fps20)");
     }
     return sFrameMode;
 }
 void oot_ps3_set_frame_mode(int mode) {
-    sFrameMode = mode == 1 || mode == 2 ? mode : 0;
-    remove("/dev_hdd0/game/OOTP30048/USRDIR/fps20");
-    remove("/dev_hdd0/game/OOTP30048/USRDIR/fps_unlocked");
+    static const char* const kFiles[5] = { nullptr, "/dev_hdd0/game/OOTP30048/USRDIR/fps_unlocked",
+                                           "/dev_hdd0/game/OOTP30048/USRDIR/fps20",
+                                           "/dev_hdd0/game/OOTP30048/USRDIR/fps30",
+                                           "/dev_hdd0/game/OOTP30048/USRDIR/fps_auto" };
+    sFrameMode = mode >= 1 && mode <= 4 ? mode : 0;
+    for (int i = 1; i < 5; ++i) remove(kFiles[i]);
     if (sFrameMode != 0) {
-        FILE* flag = fopen(sFrameMode == 2 ? "/dev_hdd0/game/OOTP30048/USRDIR/fps20"
-                                           : "/dev_hdd0/game/OOTP30048/USRDIR/fps_unlocked", "wb");
+        FILE* flag = fopen(kFiles[sFrameMode], "wb");
         if (flag != nullptr) fclose(flag);
     }
+}
+// Auto mode's current choice (debug menu shows it): 1 while running at steady 30.
+static bool sAutoHalfRate = false;
+int oot_ps3_frame_auto_half(void) {
+    return sAutoHalfRate ? 1 : 0;
 }
 int oot_ps3_target_fps(void) {
     return oot_ps3_frame_mode() == 2 ? 20 : 60;
@@ -531,8 +544,23 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
             bool drawn = false;
             sLastDrawUs[0] = sLastDrawUs[1] = sLastDrawUs[2] = 0;
             sLastDrawn = sLastSkipped = 0;
+            const int frameMode = oot_ps3_frame_mode();
+            // Steady 30: only even vblanks get a frame, so every frame stays on screen for
+            // exactly two refreshes (1 or 2 draws per update, each interpolated to its time).
+            const bool halfRate = interpolating && (frameMode == 3 || (frameMode == 4 && sAutoHalfRate));
             for (int slot = interpolating ? 0 : 2; slot < 3; ++slot) {
                 const bool last = slot == 2;
+                if (halfRate && ((sSlotBase + static_cast<unsigned int>(slot) + 1U) & 1U) != 0U) continue;
+                if (halfRate) {
+                    // Start this draw one vblank before its own, so its flip lands on it and
+                    // the previous frame stays up for two refreshes.
+                    const unsigned int start = sSlotBase + static_cast<unsigned int>(slot);
+                    const unsigned long long w0 = oot_ps3_microseconds_now();
+                    while (static_cast<int>(oot_ps3_pacing_vblank() - start) < 0 &&
+                           oot_ps3_microseconds_now() - w0 < 60000ULL)
+                        usleep(500);
+                    sReportWaitUs += oot_ps3_microseconds_now() - w0;
+                }
                 if (!last && static_cast<int>(oot_ps3_pacing_vblank() - (sSlotBase + static_cast<unsigned int>(slot) + 1U)) >= 0) {
                     ++sReportSkipped; // its vblank has passed
                     ++sLastSkipped;
@@ -542,6 +570,21 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
                 const float t = static_cast<float>(slot + 1) / 3.0f;
                 if (!oot_ps3_fast3d_render_commands_interp(commands, slot, t, last ? 0 : 1)) break;
                 drawn = true;
+                {
+                    // Auto: smoothed cost of one draw; 3 per update must fit in 50 ms with room.
+                    static unsigned long long sAutoDrawUs = 12000;
+                    static unsigned int sAutoCalm = 0;
+                    const unsigned long long spentNow = oot_ps3_microseconds_now() - r0;
+                    sAutoDrawUs = (sAutoDrawUs * 15ULL + spentNow) / 16ULL;
+                    if (!sAutoHalfRate && sAutoDrawUs > 15500ULL) {
+                        sAutoHalfRate = true;
+                        sAutoCalm = 0;
+                    } else if (sAutoHalfRate && sAutoDrawUs < 12500ULL) {
+                        if (++sAutoCalm > 120) sAutoHalfRate = false; // ~4 s of cheap draws
+                    } else {
+                        sAutoCalm = 0;
+                    }
+                }
                 oot_ps3_watchdog_kick();
                 const unsigned long long spent = oot_ps3_microseconds_now() - r0;
                 sLastDrawUs[slot] = spent;

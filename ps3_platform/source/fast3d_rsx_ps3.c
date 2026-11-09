@@ -624,12 +624,73 @@ static int gpu_prepare(void) {
     return 1;
 }
 
+/* Depth buffer with Zcull (the RSX's hierarchical depth culling). Without it every
+ * hidden pixel still runs the fragment program - at 1080p with OoT's overdraw the RSX
+ * became the limit once the CPU side got fast. Zcull needs the depth buffer in a tile
+ * region: pitch from the tiled-pitch table, offset and size aligned to 64 KB (RPCS3
+ * cellGcmSetTileInfo checks), Zcull area aligned to 64x64 pixels and 4 KB.
+ * USRDIR/zcull_off = plain linear depth buffer as before. */
+enum { PS3_DEPTH_TILE = 0, PS3_DEPTH_ZCULL = 0 };
+static uint32_t depthPitch;
+static int sZcullOn;
+static uint32_t Ps3TiledPitch(uint32_t bytes) {
+    static const uint32_t kPitches[] = { 0x200, 0x300, 0x400, 0x500, 0x600, 0x700, 0x800, 0xA00, 0xC00, 0xD00, 0xE00,
+                                         0x1000, 0x1400, 0x1800, 0x1A00, 0x1C00, 0x2000, 0x2800, 0x3000, 0x3400,
+                                         0x3800, 0x4000, 0x5000, 0x6000, 0x6800, 0x7000, 0x8000, 0xA000, 0xC000,
+                                         0xD000, 0xE000, 0x10000 };
+    unsigned i;
+    for (i = 0; i < sizeof(kPitches) / sizeof(kPitches[0]); ++i)
+        if (bytes <= kPitches[i]) return kPitches[i];
+    return 0;
+}
 static int gpu_depth(uint32_t width, uint32_t height) {
+    char line[200];
+    uint32_t alignedH, size;
+    int zcullWanted;
     if (depthBuffer && frameWidth == width && frameHeight == height) return 1;
-    if (depthBuffer) { gpu_wait(); rsxFree(depthBuffer); depthBuffer = NULL; }
-    depthBuffer = (uint32_t*)rsxMemalign(128, (size_t)width * height * 4);
+    if (depthBuffer) {
+        gpu_wait();
+        if (sZcullOn) {
+            gcmUnbindZcull(PS3_DEPTH_ZCULL);
+            gcmUnbindTile(PS3_DEPTH_TILE);
+            sZcullOn = 0;
+        }
+        rsxFree(depthBuffer);
+        depthBuffer = NULL;
+    }
+    {
+        FILE* off = fopen("/dev_hdd0/game/OOTP30048/USRDIR/zcull_off", "rb");
+        zcullWanted = off == NULL;
+        if (off) fclose(off);
+    }
+    depthPitch = zcullWanted ? Ps3TiledPitch(width * 4U) : width * 4U;
+    if (depthPitch == 0) {
+        depthPitch = width * 4U;
+        zcullWanted = 0;
+    }
+    alignedH = (height + 63U) & ~63U;
+    size = (depthPitch * alignedH + 0xFFFFU) & ~0xFFFFU;
+    depthBuffer = (uint32_t*)rsxMemalign(65536, size);
     if (!depthBuffer || rsxAddressToOffset(depthBuffer, &depthOffset)) return 0;
     frameWidth = width; frameHeight = height;
+    if (zcullWanted) {
+        const s32 tileRet = gcmSetTileInfo(PS3_DEPTH_TILE, GCM_LOCATION_RSX, depthOffset, size, depthPitch,
+                                           GCM_COMPMODE_DISABLED, (u16)(depthOffset / 0x10000U), 0);
+        const s32 bindRet = tileRet == 0 ? gcmBindTile(PS3_DEPTH_TILE) : -1;
+        const s32 zcullRet = bindRet == 0 ? gcmBindZcull(PS3_DEPTH_ZCULL, depthOffset, (width + 63U) & ~63U, alignedH, 0,
+                                                         GCM_ZCULL_Z24S8, GCM_SURFACE_CENTER_1, GCM_ZCULL_LESS,
+                                                         GCM_ZCULL_LONES, GCM_SCULL_SFUNC_ALWAYS, 0x80, 0xFF)
+                                          : -1;
+        sZcullOn = zcullRet == 0;
+        snprintf(line, sizeof(line),
+                 "graph: Play rsx depth %ux%u pitch %u tiled: tile=%d bind=%d zcull=%d -> Zcull %s", (unsigned)width,
+                 (unsigned)height, (unsigned)depthPitch, (int)tileRet, (int)bindRet, (int)zcullRet,
+                 sZcullOn ? "ON" : "OFF");
+    } else {
+        snprintf(line, sizeof(line), "graph: Play rsx depth %ux%u pitch %u linear (Zcull off)", (unsigned)width,
+                 (unsigned)height, (unsigned)depthPitch);
+    }
+    oot_ps3_early_trace(line);
     return 1;
 }
 
@@ -863,7 +924,7 @@ int oot_ps3_rsx_begin(uint32_t width, uint32_t height) {
     if (!gpu_prepare() || !gpu_depth(width, height)) return 0;
     ctx = (gcmContextData*)oot_ps3_shipwright_video_rsx_context();
     if (!ctx) return 0;
-    Ps3SetSurface(GCM_SURFACE_X8R8G8B8, oot_ps3_shipwright_video_rsx_offset(), width * 4, depthOffset, width * 4, width,
+    Ps3SetSurface(GCM_SURFACE_X8R8G8B8, oot_ps3_shipwright_video_rsx_offset(), width * 4, depthOffset, depthPitch, width,
                   height);
     sTargetFb = -1;
     sTargetFbForStall = -1;
@@ -884,6 +945,11 @@ int oot_ps3_rsx_begin(uint32_t width, uint32_t height) {
                          GCM_COLOR_MASK_R | GCM_COLOR_MASK_A);
     rsxSetClearColor(ctx, 0);
     rsxSetClearDepthStencil(ctx, 0xffffff00);
+    if (sZcullOn) {
+        /* Zcull follows the depth test (LESS/LEQUAL draws); the depth clear resets it. */
+        rsxSetZCullControl(ctx, GCM_ZCULL_LESS, GCM_ZCULL_LONES);
+        rsxSetZCullEnable(ctx, GCM_TRUE, GCM_FALSE);
+    }
     rsxClearSurface(ctx, GCM_CLEAR_R | GCM_CLEAR_G | GCM_CLEAR_B | GCM_CLEAR_A | GCM_CLEAR_Z);
     rsxLoadVertexProgram(ctx, vp, vpCode);
     sCurrentVp = 0;

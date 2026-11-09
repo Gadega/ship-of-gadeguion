@@ -42,6 +42,7 @@ int oot_ps3_trace_enabled(void);
 void oot_ps3_trace_set_enabled(int on);
 int oot_ps3_frame_mode(void);
 void oot_ps3_set_frame_mode(int mode);
+int oot_ps3_frame_auto_half(void); /* shipwright_bootstrap_ps3.cpp */
 int oot_ps3_tnl_requested(void);
 void oot_ps3_tnl_set_requested(int on);
 int oot_ps3_render_thread_enabled(void);          /* shipwright_bootstrap_ps3.cpp */
@@ -208,9 +209,10 @@ static void BuildMain(void) {
             case ITEM_HUD: snprintf(value, sizeof(value), "[%s]", sHud ? "ON" : "OFF"); break;
             case ITEM_TRACE: snprintf(value, sizeof(value), "[%s]", oot_ps3_trace_enabled() ? "ON" : "OFF"); break;
             case ITEM_FPS: {
-                static const char* const kModes[3] = { "[60]", "[UNLOCKED]", "[20]" };
+                static const char* const kModes[5] = { "[60]", "[UNLOCKED]", "[20]", "[30 STEADY]", "[AUTO 60]" };
                 const int mode = oot_ps3_frame_mode();
-                snprintf(value, sizeof(value), "%s", kModes[mode >= 0 && mode < 3 ? mode : 0]);
+                snprintf(value, sizeof(value), "%s",
+                         mode == 4 && oot_ps3_frame_auto_half() ? "[AUTO 30]" : kModes[mode >= 0 && mode < 5 ? mode : 0]);
             } break;
             case ITEM_RES: snprintf(value, sizeof(value), "[%s]", Res720() ? "720p" : "NATIVE"); break;
             case ITEM_TNL: {
@@ -226,7 +228,7 @@ static void BuildMain(void) {
     }
     if (sSel == ITEM_TNL) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (probes draw white, no depth/cull; attr probe ignores matrices)");
     Line(6 + ITEM_COUNT + 3, COL_DIM, "%s", oot_ps3_rsx_selftest_summary());
-    if (sSel == ITEM_FPS) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (unlocked: no vsync, may tear; 20: no interpolation)");
+    if (sSel == ITEM_FPS) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (auto: 60, steady 30 when heavy; unlocked may tear)");
     if (sSel == ITEM_RES) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (native = 1080p on a 1080p TV; restart the game to apply)");
     Line(PANEL_ROWS - 3, COL_WARN, "%s", sStatus);
     Line(PANEL_ROWS - 1, COL_DIM, "D-pad: move   X: select   O: back   R3: close");
@@ -329,10 +331,12 @@ static void Activate(void) {
             oot_ps3_trace_set_enabled(!oot_ps3_trace_enabled());
             SetStatus(oot_ps3_trace_enabled() ? "Trace files ON (saved in USRDIR)" : "Trace files OFF");
             break;
-        case ITEM_FPS:
-            /* 60 -> unlocked -> 20 -> 60 */
-            oot_ps3_set_frame_mode(oot_ps3_frame_mode() == 0 ? 1 : oot_ps3_frame_mode() == 1 ? 2 : 0);
-            break;
+        case ITEM_FPS: {
+            /* 60 -> auto -> steady 30 -> unlocked -> 20 -> 60 */
+            static const int kNext[5] = { 4, 2, 0, 1, 3 };
+            const int mode = oot_ps3_frame_mode();
+            oot_ps3_set_frame_mode(kNext[mode >= 0 && mode < 5 ? mode : 0]);
+        } break;
         case ITEM_RES:
             SetRes720(!Res720());
             SetStatus("Resolution saved: restart the game to apply");
