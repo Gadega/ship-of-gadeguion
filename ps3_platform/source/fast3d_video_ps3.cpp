@@ -735,14 +735,22 @@ extern "C" void oot_ps3_rsx_tnl_debug_mode(int mode);
 // Debug menu "GPU vertex path": 0 off, 1 on, 2 on with the white probe shader, 3 on without
 // culling, 4 on with the attribute probe (no constants), 5 attribute probe with 32-bit float
 // vertex records instead of the packed s16/u8 ones, 6 on with float vertex records. Remembered in USRDIR/tnl_on (its first byte is the mode digit; empty = 1).
+// Default (no USRDIR/tnl_on): on with float vertex records (mode 6) when the RSX
+// self-test at the first frame drew them correctly, else off. "0" in the file = off.
+extern "C" int oot_ps3_rsx_selftest_float_ok(void); // fast3d_rsx_ps3.c
 extern "C" int oot_ps3_tnl_requested(void) {
     if (sTnlEnabled < 0) {
         FILE* flag = fopen("/dev_hdd0/game/OOTP30048/USRDIR/tnl_on", "rb");
-        sTnlEnabled = 0;
         if (flag != nullptr) {
             const int c = fgetc(flag);
-            sTnlEnabled = (c >= '1' && c <= '6') ? c - '0' : 1;
+            sTnlEnabled = (c >= '0' && c <= '6') ? c - '0' : 1;
             fclose(flag);
+        } else {
+            const int selfTest = oot_ps3_rsx_selftest_float_ok();
+            if (selfTest < 0) return 0; // the self-test hasn't run yet: decide later
+            sTnlEnabled = selfTest ? 6 : 0;
+            oot_ps3_early_trace(selfTest ? "graph: Play GPU vertex pipeline on by default (self-test passed)"
+                                         : "graph: Play GPU vertex pipeline off: self-test FAILED on this console");
         }
         oot_ps3_rsx_tnl_debug_mode(sTnlEnabled);
     }
@@ -751,14 +759,13 @@ extern "C" int oot_ps3_tnl_requested(void) {
 extern "C" void oot_ps3_tnl_set_requested(int mode) {
     sTnlEnabled = mode >= 0 && mode <= 6 ? mode : 0;
     oot_ps3_rsx_tnl_debug_mode(sTnlEnabled);
-    if (sTnlEnabled != 0) {
+    {
+        // Remember the choice, including "off" (the default is on).
         FILE* flag = fopen("/dev_hdd0/game/OOTP30048/USRDIR/tnl_on", "wb");
         if (flag != nullptr) {
             fputc('0' + sTnlEnabled, flag);
             fclose(flag);
         }
-    } else {
-        remove("/dev_hdd0/game/OOTP30048/USRDIR/tnl_on");
     }
     static const char* const kModes[7] = { "off", "on", "on (white probe shader)", "on (no culling)",
                                            "on (attribute probe: raw model coordinates)",
@@ -771,8 +778,7 @@ extern "C" int oot_ps3_tnl_enabled(void) {
     int& sEnabled = sTnlEnabled;
     if (sEnabled < 0) {
         (void)oot_ps3_tnl_requested();
-        oot_ps3_early_trace(sEnabled ? "graph: Play GPU vertex pipeline on (USRDIR/tnl_on)"
-                                     : "graph: Play GPU vertex pipeline off (USRDIR/tnl_on turns it on)");
+        if (sEnabled < 0) return 0; // undecided until the self-test ran
     }
     return sEnabled && sPs3Renderer != nullptr && sPs3Renderer->GpuActive();
 }

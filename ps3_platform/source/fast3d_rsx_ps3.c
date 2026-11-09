@@ -751,6 +751,9 @@ int oot_ps3_rsx_triangles(const float* vbo, uint32_t stride, uint32_t triangles,
                           uint32_t texture1_id, int alpha, uint32_t inputs, int material);
 const uint32_t* oot_ps3_shipwright_video_target_pixels(uint32_t* width, uint32_t* height);
 static char sSelfTestSummary[64] = "GPU self-test: not run";
+/* -1 not run yet, 1 the GPU vertex path (float records) drew correctly, 0 it failed. */
+static int sSelfTestFloatOk = -1;
+int oot_ps3_rsx_selftest_float_ok(void) { return sSelfTestFloatOk; }
 const char* oot_ps3_rsx_selftest_summary(void) {
     return sSelfTestSummary;
 }
@@ -926,6 +929,14 @@ static void Ps3TnlSelfTest(uint32_t width, uint32_t height) {
         oot_ps3_early_trace(line);
     }
     oot_ps3_early_trace(sSelfTestSummary);
+    {
+        /* Variants 1 (colour from the vertex) and 3 (constant white) use the float records
+         * the default GPU path draws with. */
+        const unsigned int c1 = results[1], c3 = results[3];
+        const int ok1 = c1 != 0xDEADBEEFU && (c1 & 0xFF) > 0x80 && ((c1 >> 8) & 0xFF) > 0x80 && ((c1 >> 16) & 0xFF) > 0x80;
+        const int ok3 = c3 != 0xDEADBEEFU && (c3 & 0xFF) > 0x80 && ((c3 >> 8) & 0xFF) > 0x80 && ((c3 >> 16) & 0xFF) > 0x80;
+        sSelfTestFloatOk = ok1 && ok3;
+    }
 }
 
 int oot_ps3_rsx_begin(uint32_t width, uint32_t height) {

@@ -13,6 +13,10 @@
  * normal RSX triangle path. While the menu is open the game gets no controller input.
  * PS3 system headers only (game-side helpers are in ps3_debug_game.c). */
 
+/* 1 = the R3 debug menu is built in (test builds); release builds pass 0. */
+#ifndef OOT_PS3_DEBUG_MENU
+#define OOT_PS3_DEBUG_MENU 1
+#endif
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -375,6 +379,7 @@ static void Activate(void) {
 /* Called with the PS3 buttons each time the game reads the controller.
  * Returns 1 while the menu is open: the game then gets no input. */
 int oot_ps3_debug_input(unsigned int buttons) {
+    if (!OOT_PS3_DEBUG_MENU) return 0; /* release build: no menu */
     const unsigned int pressed = buttons & ~sPrevButtons;
     unsigned int repeat = 0;
     if (buttons != 0 && buttons == sPrevButtons) {
@@ -422,6 +427,7 @@ int oot_ps3_debug_input(unsigned int buttons) {
 
 /* Called at the end of every drawn frame, before it is presented. */
 void oot_ps3_debug_overlay_frame(unsigned int screenWidth, unsigned int screenHeight) {
+    if (!OOT_PS3_DEBUG_MENU) return; /* release build: no menu */
     const unsigned long long now = oot_ps3_microseconds_now();
     int rows;
     float quadW, quadH, x0, y0, x1, y1, v1;

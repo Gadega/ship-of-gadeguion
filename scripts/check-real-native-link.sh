@@ -124,8 +124,10 @@ bash "$ROOT/scripts/build-fast3d-rsx-shaders.sh" >"$OUT/logs/fast3d-rsx-shaders.
     -o "$OUT/objects/ps3_savedata.o" >"$OUT/logs/ps3-savedata.log" 2>&1 || {
     echo 'BLOCKED compiling PS3 save data'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/ps3-savedata.log"; exit 3; }
 # Debug menu overlay (R3); system headers only, no game headers.
+# Release builds: OOT_PS3_DEBUG_MENU=0 compiles the menu out (R3 does nothing).
+echo "Debug menu (R3): ${OOT_PS3_DEBUG_MENU:-1}"
 "${cc_run[@]}" -std=gnu11 -O2 -mcpu=cell -ffunction-sections -fdata-sections -Wall -Wextra -Werror \
-    "-I$PS3_SDK_ROOT/ppu/include" \
+    "-DOOT_PS3_DEBUG_MENU=${OOT_PS3_DEBUG_MENU:-1}" "-I$PS3_SDK_ROOT/ppu/include" \
     -c "$ROOT/ps3_platform/source/ps3_debug_overlay.c" \
     -o "$OUT/objects/ps3_debug_overlay.o" >"$OUT/logs/ps3-debug-overlay.log" 2>&1 || {
     echo 'BLOCKED compiling debug menu overlay'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/ps3-debug-overlay.log"; exit 3; }
