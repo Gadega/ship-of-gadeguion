@@ -71,8 +71,10 @@ void oot_ps3_audio_debug_state(char* out, unsigned size) {
              sAudioLastWakeUs != 0 ? (now - sAudioLastWakeUs) / 1000ULL : 0ULL, sEngineLock);
 }
 
+void oot_ps3_lock_backoff(unsigned int* spins); /* ps3_early_entry.c */
 void oot_ps3_audio_lock(void) {
-    while (__sync_lock_test_and_set(&sEngineLock, 1)) sysThreadYield();
+    unsigned int spins = 0;
+    while (__sync_lock_test_and_set(&sEngineLock, 1)) oot_ps3_lock_backoff(&spins);
 }
 
 void oot_ps3_audio_unlock(void) {

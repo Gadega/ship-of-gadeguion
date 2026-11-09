@@ -7,6 +7,7 @@
 #include <sys/thread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <math.h>
 static uint32_t sPs3RsxFrames;
@@ -518,7 +519,8 @@ static void fence_wait(uint32_t value) {
     if (value == 0 || fence_passed(value)) return;
     t0 = oot_ps3_microseconds_now();
     while (!fence_passed(value)) {
-        if (++spins > 64) sysThreadYield();
+        if (spins > 64) usleep(20); /* yield wouldn't let lower-priority threads run */
+        ++spins;
         if (!reported && (spins & 1023U) == 0 && oot_ps3_microseconds_now() - t0 > 3000000ULL) {
             /* The RSX stopped: say so (the watchdog ends the run later). */
             char line[128];

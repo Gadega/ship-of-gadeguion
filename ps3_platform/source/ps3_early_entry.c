@@ -20,6 +20,16 @@ void sysThreadYieldPs3(void) {
     sysThreadYield();
 }
 
+/* Waiting in a lock loop. sysThreadYield() only hands the CPU to threads of equal or
+ * higher priority: a high-priority thread yield-spinning on a lock held by a
+ * lower-priority one (audio thread 900 vs game thread 1001, with the render thread
+ * keeping the other hardware thread busy) starved the holder for minutes. Spin a
+ * little, then really sleep so any thread can run. */
+void oot_ps3_lock_backoff(unsigned int* spins) {
+    if (++*spins < 32) return;
+    usleep(20);
+}
+
 /* Threads and semaphores for files that can't include PS3 system headers (the
  * render thread in shipwright_bootstrap_ps3.cpp). Semaphore handles are LV2 ids. */
 #include <sys/sem.h>
@@ -57,17 +67,12 @@ static inline unsigned long long Ps3ThreadToken(void) {
 }
 void oot_ps3_bridge_lock(void) {
     const unsigned long long me = Ps3ThreadToken();
-    int spins = 0;
+    unsigned int spins = 0;
     if (sBridgeOwner == me) {
         ++sBridgeDepth;
         return;
     }
-    while (!__sync_bool_compare_and_swap(&sBridgeOwner, 0ULL, me)) {
-        if (++spins > 64) {
-            sysThreadYield();
-            spins = 0;
-        }
-    }
+    while (!__sync_bool_compare_and_swap(&sBridgeOwner, 0ULL, me)) oot_ps3_lock_backoff(&spins);
     sBridgeDepth = 1;
 }
 void oot_ps3_bridge_unlock(void) {
@@ -147,7 +152,8 @@ static volatile int sTraceAsyncOn;
 static sys_ppu_thread_t sTraceAsyncThread;
 
 static void TraceSpinLock(volatile int* lock) {
-    while (__sync_lock_test_and_set(lock, 1)) sysThreadYield();
+    unsigned int spins = 0;
+    while (__sync_lock_test_and_set(lock, 1)) oot_ps3_lock_backoff(&spins);
 }
 static void TraceSpinUnlock(volatile int* lock) {
     __sync_lock_release(lock);

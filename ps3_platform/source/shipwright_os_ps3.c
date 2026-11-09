@@ -77,9 +77,11 @@ static sys_ppu_thread_t sViThread;
 u8 __osMaxControllers = MAXCONTROLLERS;
 __OSEventState __osEventStateTab[OS_NUM_EVENTS];
 
+void oot_ps3_lock_backoff(unsigned int* spins); /* ps3_early_entry.c */
 static void RegistryLock(void) {
+    unsigned int spins = 0;
     while (__sync_lock_test_and_set(&sRegistryLock, 1)) {
-        sysThreadYield();
+        oot_ps3_lock_backoff(&spins);
     }
 }
 
@@ -93,8 +95,9 @@ static void OsTrace(const char* message) {
 }
 
 static void QueueLock(Ps3QueueSlot* slot) {
+    unsigned int spins = 0;
     while (__sync_lock_test_and_set(&slot->lock, 1)) {
-        sysThreadYield();
+        oot_ps3_lock_backoff(&spins);
     }
 }
 
@@ -159,7 +162,7 @@ int32_t osSendMesg(OSMesgQueue* queue, OSMesg message, int32_t flag) {
         if (flag == OS_MESG_NOBLOCK) {
             return -1;
         }
-        sysThreadYield();
+        usleep(20); /* unreachable: queues never block (flag forced NOBLOCK) */
     }
     index = (queue->first + queue->validCount) % queue->msgCount;
     queue->msg[index] = message;
@@ -187,7 +190,7 @@ int32_t osJamMesg(OSMesgQueue* queue, OSMesg message, int32_t flag) {
         if (flag == OS_MESG_NOBLOCK) {
             return -1;
         }
-        sysThreadYield();
+        usleep(20); /* unreachable: queues never block (flag forced NOBLOCK) */
     }
     queue->first = (queue->first + queue->msgCount - 1) % queue->msgCount;
     queue->msg[queue->first] = message;
@@ -215,7 +218,7 @@ int32_t osRecvMesg(OSMesgQueue* queue, OSMesg* message, int32_t flag) {
         if (flag == OS_MESG_NOBLOCK) {
             return -1;
         }
-        sysThreadYield();
+        usleep(20); /* unreachable: queues never block (flag forced NOBLOCK) */
     }
     if (message != NULL) {
         *message = queue->msg[queue->first];

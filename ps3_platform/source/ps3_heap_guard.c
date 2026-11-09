@@ -16,7 +16,7 @@
  * Release builds leave it off (OOT_PS3_HEAP_GUARD 0): the wrappers pass straight
  * through to newlib. Build with -DOOT_PS3_HEAP_GUARD=1 to hunt heap corruption. */
 #ifndef OOT_PS3_HEAP_GUARD
-#define OOT_PS3_HEAP_GUARD 1 /* TEMPORARY: render-thread corruption hunt (2026-11-08) */
+#define OOT_PS3_HEAP_GUARD 0
 #endif
 
 #include <stddef.h>
@@ -91,8 +91,10 @@ static unsigned int sUafCount;
 static unsigned int sFreeDamageCount;
 static unsigned int sReported;
 
+void oot_ps3_lock_backoff(unsigned int* spins); /* ps3_early_entry.c */
 static void Lock(void) {
-    while (__sync_lock_test_and_set(&sLock, 1)) sysThreadYield();
+    unsigned int spins = 0;
+    while (__sync_lock_test_and_set(&sLock, 1)) oot_ps3_lock_backoff(&spins);
 }
 static void Unlock(void) {
     __sync_lock_release(&sLock);
