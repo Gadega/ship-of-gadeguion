@@ -3815,8 +3815,10 @@ void KaleidoScope_RegisterUpdatedDungeonMapTexture() {
         InterfaceContext* interfaceCtx = &gPlayState->interfaceCtx;
         int32_t size = ResourceGetTexSizeByName(interfaceCtx->mapSegmentName[0]);
 
-        KaleidoScope_OverridePalIndexCI4(interfaceCtx->mapSegment[0], size, interfaceCtx->mapPaletteIndex, 14);
-        KaleidoScope_OverridePalIndexCI4(interfaceCtx->mapSegment[1], size, interfaceCtx->mapPaletteIndex, 14);
+        if (interfaceCtx->mapSegment != NULL) {
+            KaleidoScope_OverridePalIndexCI4(interfaceCtx->mapSegment[0], size, interfaceCtx->mapPaletteIndex, 14);
+            KaleidoScope_OverridePalIndexCI4(interfaceCtx->mapSegment[1], size, interfaceCtx->mapPaletteIndex, 14);
+        }
     }
 }
 
@@ -3847,8 +3849,18 @@ void KaleidoScope_UpdateDungeonMap(PlayState* play) {
         oot_ps3_early_trace("trace: kaleido dungeon map had no mapSegment; using a static pair");
     }
 #endif
+#ifdef __PS3__
+    char** ps3MapSegment = interfaceCtx->mapSegment;
+#endif
     KaleidoScope_LoadDungeonMap(play);
 #ifdef __PS3__
+    if (interfaceCtx->mapSegment != ps3MapSegment) {
+        char line[160];
+        snprintf(line, sizeof(line), "trace: kaleido-map mapSegment CHANGED by LoadDungeonMap: was %p now %p (restored)",
+                 (void*)ps3MapSegment, (void*)interfaceCtx->mapSegment);
+        oot_ps3_early_trace(line);
+        interfaceCtx->mapSegment = ps3MapSegment;
+    }
     {
         extern void oot_ps3_early_trace_flush_usb(void);
         char line[256];
@@ -3861,6 +3873,14 @@ void KaleidoScope_UpdateDungeonMap(PlayState* play) {
 #endif
     Map_SetFloorPalettesData(play, pauseCtx->dungeonMapSlot - 3);
 #ifdef __PS3__
+    if (interfaceCtx->mapSegment != ps3MapSegment) {
+        char line[200];
+        snprintf(line, sizeof(line),
+                 "trace: kaleido-map mapSegment CHANGED by Map_SetFloorPalettesData(floor=%d): was %p now %p (restored)",
+                 (int)(pauseCtx->dungeonMapSlot - 3), (void*)ps3MapSegment, (void*)interfaceCtx->mapSegment);
+        oot_ps3_early_trace(line);
+        interfaceCtx->mapSegment = ps3MapSegment;
+    }
     {
         extern void oot_ps3_early_trace_flush_usb(void);
         oot_ps3_early_trace("graph: Play kaleido-map floor palettes done");
@@ -3880,13 +3900,13 @@ void KaleidoScope_UpdateDungeonMap(PlayState* play) {
     }
 
     if ((play->sceneNum >= SCENE_DEKU_TREE) && (play->sceneNum <= SCENE_TREASURE_BOX_SHOP)) {
-        if ((VREG(30) + 3) == pauseCtx->cursorPoint[PAUSE_MAP]) {
+        if ((VREG(30) + 3) == pauseCtx->cursorPoint[PAUSE_MAP] && interfaceCtx->mapSegment != NULL) {
             KaleidoScope_OverridePalIndexCI4(interfaceCtx->mapSegment[0], size, interfaceCtx->mapPaletteIndex, 14);
         }
     }
 
     if ((play->sceneNum >= SCENE_DEKU_TREE) && (play->sceneNum <= SCENE_TREASURE_BOX_SHOP)) {
-        if ((VREG(30) + 3) == pauseCtx->cursorPoint[PAUSE_MAP]) {
+        if ((VREG(30) + 3) == pauseCtx->cursorPoint[PAUSE_MAP] && interfaceCtx->mapSegment != NULL) {
             KaleidoScope_OverridePalIndexCI4(interfaceCtx->mapSegment[1], size, interfaceCtx->mapPaletteIndex, 14);
         }
     }
