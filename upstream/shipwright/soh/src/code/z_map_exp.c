@@ -535,6 +535,16 @@ void Map_Init(PlayState* play) {
     interfaceCtx->unk_25A = -1;
 
     interfaceCtx->mapSegment = GAMESTATE_ALLOC_MC(&play->state, 2 * sizeof(char*));
+#ifdef __PS3__
+    if (interfaceCtx->mapSegment == NULL) {
+        // The pause menu's dungeon map writes through this (a NULL here crashed every pause
+        // inside the Deku Tree). Two pointers: a static pair is enough.
+        extern void oot_ps3_early_trace(const char* message);
+        static char* sPs3MapSegment[2];
+        interfaceCtx->mapSegment = sPs3MapSegment;
+        oot_ps3_early_trace("trace: Map_Init mapSegment allocation FAILED (game state memory full); using a static pair");
+    }
+#endif
     // "ＭＡＰ texture initialization scene_data_ID=%d mapSegment=%x"
     osSyncPrintf("\n\n\nＭＡＰ テクスチャ初期化   scene_data_ID=%d\nmapSegment=%x\n\n", play->sceneNum,
                  interfaceCtx->mapSegment, play);

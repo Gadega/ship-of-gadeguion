@@ -3839,15 +3839,22 @@ void KaleidoScope_UpdateDungeonMap(PlayState* play) {
         oot_ps3_early_trace(line);
         oot_ps3_early_trace_flush_usb();
     }
+    if (interfaceCtx->mapSegment == NULL) {
+        // Map_Init never ran for this Play state (the PS3 title skips it) or could not
+        // allocate: give the dungeon map its two texture pointers.
+        static char* sPs3PauseMapSegment[2];
+        interfaceCtx->mapSegment = sPs3PauseMapSegment;
+        oot_ps3_early_trace("trace: kaleido dungeon map had no mapSegment; using a static pair");
+    }
 #endif
     KaleidoScope_LoadDungeonMap(play);
 #ifdef __PS3__
     {
         extern void oot_ps3_early_trace_flush_usb(void);
         char line[256];
-        snprintf(line, sizeof(line), "graph: Play kaleido-map loaded tex0=%s seg0=%p seg1=%p",
+        snprintf(line, sizeof(line), "graph: Play kaleido-map loaded tex0=%s mapSegment=%p",
                  interfaceCtx->mapSegmentName[0] ? (const char*)interfaceCtx->mapSegmentName[0] : "(null)",
-                 interfaceCtx->mapSegment[0], interfaceCtx->mapSegment[1]);
+                 (void*)interfaceCtx->mapSegment);
         oot_ps3_early_trace(line);
         oot_ps3_early_trace_flush_usb();
     }
