@@ -97,7 +97,7 @@ if ! strings "$SOURCE_ELF" | grep -F 'actor-init: before Actor_SpawnEntry' >/dev
     echo 'STOP: native ELF lacks fresh upstream actor initialization probes; refusing stale ELF.'
     exit 2
 fi
-if ! strings "$SOURCE_ELF" | grep -F 'actor-update-all: PS3 uses default allow-update result' >/dev/null ||
+if ! strings "$SOURCE_ELF" | grep -F 'actor-update-all: before genuine Epona update' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'player-update-common: before slippery-floor hook' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'player-scene-collision: deferred for the title stub' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'player-update-common: PS3 uses default player action result' >/dev/null ||

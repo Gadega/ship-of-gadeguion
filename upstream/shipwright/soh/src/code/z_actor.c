@@ -2800,12 +2800,10 @@ void Actor_UpdateAll(PlayState* play, ActorContext* actorCtx) {
                         ACTOR_PS3_TRACE("actor-update-all: before player update permission");
                     }
 #ifdef __PS3__
-                    ACTOR_PS3_TRACE("actor-update-all: PS3 uses default allow-update result");
                     if (true) {
 #else
                     if (GameInteractor_ShouldActorUpdate(actor)) {
 #endif
-                        ACTOR_PS3_TRACE("actor-update-all: before actor update callback");
                         if (actor->id == ACTOR_EN_HORSE) {
                             ACTOR_PS3_TRACE("actor-update-all: before genuine Epona update");
                         }

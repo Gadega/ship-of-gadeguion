@@ -30,6 +30,32 @@ static void Ps3VBlankHandler(const u32 head) {
 }
 unsigned int oot_ps3_vblank_count(void) { return sPs3VBlanks; }
 
+/* Frame pacing as the TV sees it: the flip handler runs when a new frame is actually
+ * shown; the vblanks since the previous one are how long that frame stayed up
+ * (1 = smooth 60, 2 = a 33 ms frame, 3+ = a hitch). */
+static volatile unsigned int sPs3LastFlipVBlank;
+static volatile unsigned int sPs3FlipHist[4];
+static volatile unsigned int sPs3FlipMaxGap;
+static void Ps3FlipHandler(const u32 head) {
+    const unsigned int now = sPs3VBlanks;
+    const unsigned int gap = now - sPs3LastFlipVBlank;
+    (void)head;
+    if (sPs3LastFlipVBlank != 0 && gap < 1000U) {
+        ++sPs3FlipHist[gap <= 1U ? 0 : gap == 2U ? 1 : gap == 3U ? 2 : 3];
+        if (gap > sPs3FlipMaxGap) sPs3FlipMaxGap = gap;
+    }
+    sPs3LastFlipVBlank = now;
+}
+void oot_ps3_flip_take_hist(unsigned int hist[4], unsigned int* maxGap) {
+    unsigned int i;
+    for (i = 0; i < 4; ++i) {
+        hist[i] = sPs3FlipHist[i];
+        sPs3FlipHist[i] = 0;
+    }
+    *maxGap = sPs3FlipMaxGap;
+    sPs3FlipMaxGap = 0;
+}
+
 /* Shape of the TV picture (XMB TV Type 4:3 / 16:9). 480/576 modes are 720 pixels wide
  * for both shapes, so the pixel count alone doesn't tell; this does. */
 static float sPs3DisplayAspect = 16.0f / 9.0f;
@@ -212,6 +238,7 @@ int oot_ps3_screen_init(OotPs3Screen* screen) {
     gcmSetFlipMode(GCM_FLIP_VSYNC);
     oot_ps3_early_trace("rsx-init: flip mode configured");
     gcmSetVBlankHandler(Ps3VBlankHandler);
+    gcmSetFlipHandler(Ps3FlipHandler);
     oot_ps3_early_trace("rsx-init: vblank counter registered");
 
     for (s32 i = 0; i < OOT_PS3_BUFFER_COUNT; ++i) {

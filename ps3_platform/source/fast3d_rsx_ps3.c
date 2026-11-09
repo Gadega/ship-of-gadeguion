@@ -33,6 +33,14 @@ void oot_ps3_rsx_set_decal(int decal) {
 unsigned int oot_ps3_rsx_frame_index(void) { return sPs3RsxFrames; }
 extern unsigned long long oot_ps3_microseconds_now(void);
 static unsigned long long sPs3GpuWaitUs;
+/* Running totals for the per-draw pacing breakdown (never reset). */
+static unsigned long long sPs3GpuWaitTotalUs, sPs3TexUploadTotalUs;
+static unsigned int sPs3TexUploadTotal;
+void oot_ps3_rsx_draw_counters(unsigned long long* gpuWaitUs, unsigned int* texUploads, unsigned long long* texUploadUs) {
+    *gpuWaitUs = sPs3GpuWaitTotalUs;
+    *texUploads = sPs3TexUploadTotal;
+    *texUploadUs = sPs3TexUploadTotalUs;
+}
 static unsigned long long sPs3FillUs, sPs3SubmitUs;
 void oot_ps3_rsx_take_timing(unsigned long long* fill, unsigned long long* submit) {
     *fill = sPs3FillUs; *submit = sPs3SubmitUs;
@@ -532,6 +540,7 @@ static void fence_wait(uint32_t value) {
         }
     }
     sPs3GpuWaitUs += oot_ps3_microseconds_now() - t0;
+    sPs3GpuWaitTotalUs += oot_ps3_microseconds_now() - t0;
 }
 
 /* Full sync: everything queued so far has finished on the GPU. */
@@ -972,7 +981,15 @@ int oot_ps3_rsx_begin(uint32_t width, uint32_t height) {
 }
 
 static int Ps3UploadRgba(GpuTexture* t, const uint8_t* rgba, uint32_t width, uint32_t height);
+int oot_ps3_rsx_texture_impl(uint32_t id, const uint8_t* rgba, uint32_t width, uint32_t height);
 int oot_ps3_rsx_texture(uint32_t id, const uint8_t* rgba, uint32_t width, uint32_t height) {
+    const unsigned long long t0 = oot_ps3_microseconds_now();
+    const int ok = oot_ps3_rsx_texture_impl(id, rgba, width, height);
+    ++sPs3TexUploadTotal;
+    sPs3TexUploadTotalUs += oot_ps3_microseconds_now() - t0;
+    return ok;
+}
+int oot_ps3_rsx_texture_impl(uint32_t id, const uint8_t* rgba, uint32_t width, uint32_t height) {
     if (!prepared || !id || id > MAX_TEXTURES || !rgba || !width || !height ||
         width > 512 || height > 512) return 0;
     return Ps3UploadRgba(&textures[id - 1], rgba, width, height);

@@ -417,6 +417,9 @@ void oot_ps3_poll_exit(void);
 void oot_ps3_watchdog_kick(void);
 unsigned int oot_ps3_vblank_count(void); // rsx_screen.c
 void oot_ps3_screen_set_vsync(int on);    // rsx_screen.c
+void oot_ps3_flip_take_hist(unsigned int hist[4], unsigned int* maxGap); // rsx_screen.c
+void oot_ps3_rsx_draw_counters(unsigned long long* gpuWaitUs, unsigned int* texUploads,
+                               unsigned long long* texUploadUs); // fast3d_rsx_ps3.c
 void oot_ps3_heap_check(int maxReports, int fromWatchdog); // ps3_heap_guard.c
 void oot_ps3_rsx_take_tnl_stats(unsigned int* tnlDraws, unsigned int* tnlVerts, unsigned int* cpuDraws,
                                 unsigned int* vpSwitches, unsigned int* constVec4, unsigned int* combHits,
@@ -567,6 +570,9 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
                     continue;
                 }
                 const unsigned long long r0 = oot_ps3_microseconds_now();
+                unsigned long long gw0, tu0;
+                unsigned int tn0;
+                oot_ps3_rsx_draw_counters(&gw0, &tn0, &tu0);
                 const float t = static_cast<float>(slot + 1) / 3.0f;
                 if (!oot_ps3_fast3d_render_commands_interp(commands, slot, t, last ? 0 : 1)) break;
                 drawn = true;
@@ -588,6 +594,23 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
                 oot_ps3_watchdog_kick();
                 const unsigned long long spent = oot_ps3_microseconds_now() - r0;
                 sLastDrawUs[slot] = spent;
+                if (spent > 16700ULL) {
+                    // A draw longer than one refresh: what it spent the time on.
+                    static unsigned int sLongDrawLines = 0;
+                    if (sLongDrawLines < 400) {
+                        unsigned long long gw1, tu1;
+                        unsigned int tn1;
+                        char line[200];
+                        oot_ps3_rsx_draw_counters(&gw1, &tn1, &tu1);
+                        ++sLongDrawLines;
+                        snprintf(line, sizeof(line),
+                                 "graph: Play long draw slot=%d total=%llu us gpuWait=%llu us texUploads=%u (%llu us) "
+                                 "rest=%llu us",
+                                 slot, spent, gw1 - gw0, tn1 - tn0, tu1 - tu0,
+                                 spent - (gw1 - gw0) - (tu1 - tu0));
+                        oot_ps3_early_trace(line);
+                    }
+                }
                 ++sLastDrawn;
                 sReportRenderUs += spent;
                 if (spent > sReportMaxDrawUs) sReportMaxDrawUs = spent;
@@ -604,6 +627,14 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
                              sReportDrawn, static_cast<double>(sReportDrawn) * 59.94 / 192.0, sReportSkipped,
                              sReportResync, sReportRenderUs, sReportMaxDrawUs, sReportWaitUs, interpolating ? 1 : 0);
                     oot_ps3_early_trace(line);
+                    {
+                        unsigned int hist[4], maxGap = 0;
+                        oot_ps3_flip_take_hist(hist, &maxGap);
+                        snprintf(line, sizeof(line),
+                                 "graph: Play pacing/64 updates frames shown for 1 refresh=%u 2=%u 3=%u 4+=%u longest=%u",
+                                 hist[0], hist[1], hist[2], hist[3], maxGap);
+                        oot_ps3_early_trace(line);
+                    }
                     {
                         unsigned int tnlDraws = 0, tnlVerts = 0, cpuDraws = 0, vpSwitches = 0, constVec4 = 0;
                         unsigned int combHits = 0, combMisses = 0;
