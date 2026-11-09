@@ -994,10 +994,6 @@ static void RunFrame() {
                     GraphPs3Trace("graph: title frame 1 complete; testing frame resume");
                 } else if (ps3CompletedTitleFrames == 2) {
                     GraphPs3Trace("graph: title frame 2 complete; testing frame resume");
-                } else if (ps3CompletedTitleFrames >= 36) {
-                    GraphPs3Trace("graph: title frame 36 complete without Opening handoff; exiting to XMB");
-                    oot_ps3_early_trace_flush_usb();
-                    exit(0);
                 } else if (ps3CompletedTitleFrames == 6) {
                     GraphPs3Trace("graph: title frame 6 complete; native fade continuing");
                 }

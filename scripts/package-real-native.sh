@@ -168,7 +168,7 @@ if ! strings "$SOURCE_ELF" | grep -F 'resource-index: oot.o2r ZIP end record fou
     echo 'STOP: native ELF lacks the O2R archive indexer trace; refusing stale ELF.'
     exit 2
 fi
-if ! strings "$SOURCE_ELF" | grep -F 'graph: title frame 36 complete without Opening handoff; exiting to XMB' >/dev/null ||
+if ! strings "$SOURCE_ELF" | grep -F 'graph: title frame 6 complete; native fade continuing' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'fast3d-stats: triangles=%u valid=%u pixels=%u uploads=%u size=%ux%u' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'fast3d-output: nonblack=%u colored-writes=%u textured-writes=%u clears=%u center=%08x' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'fast3d: native offscreen game framebuffer presented' >/dev/null ||
