@@ -478,7 +478,10 @@ void oot_ps3_last_update_draws(unsigned long long drawUs[3], unsigned int* drawn
 // Draws one game update (20 Hz): 1-3 paced draws of its display list. Runs on the
 // render thread (or inline on the game thread when the render thread is off).
 // Returns false if nothing could be drawn.
-static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
+// `rate` = refreshes per game update (R_UPDATE_RATE: 3 in gameplay, 1 on the N64 logo).
+static bool Ps3DrawUpdate(Gfx* commands, bool interpolating, int rate) {
+        if (rate < 1 || rate > 3) rate = 3;
+        const unsigned long long tickUs = 50000ULL * static_cast<unsigned long long>(rate) / 3ULL;
         oot_ps3_early_trace("gfx-process: before native Fast3D display-list draw");
         {
             // Frame pacing on the display's vblanks (rsx_screen.c counts them; 59.94 Hz).
@@ -507,15 +510,15 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
                 // so the game logic keeps its 20 updates per second.
                 static unsigned long long sTickStart = 0, sAvgDrawUs = 15000;
                 unsigned long long now = oot_ps3_microseconds_now();
-                if (sTickStart == 0 || now > sTickStart + 100000ULL || now + 50000ULL < sTickStart) sTickStart = now;
+                if (sTickStart == 0 || now > sTickStart + 2ULL * tickUs || now + tickUs < sTickStart) sTickStart = now;
                 sLastDrawUs[0] = sLastDrawUs[1] = sLastDrawUs[2] = 0;
                 sLastDrawn = sLastSkipped = 0;
                 for (int guard = 0; guard < 64; ++guard) {
                     now = oot_ps3_microseconds_now();
                     const unsigned long long elapsed = now > sTickStart ? now - sTickStart : 0;
-                    const bool last = elapsed + sAvgDrawUs >= 50000ULL || guard == 63;
-                    const float t = last ? 1.0f : static_cast<float>(elapsed) / 50000.0f;
-                    const int index = last ? 2 : (t * 3.0f >= 2.0f ? 2 : static_cast<int>(t * 3.0f));
+                    const bool last = elapsed + sAvgDrawUs >= tickUs || guard == 63;
+                    const float t = last ? 1.0f : static_cast<float>(elapsed) / static_cast<float>(tickUs);
+                    const int index = last ? rate - 1 : (t * rate >= rate - 1 ? rate - 1 : static_cast<int>(t * rate));
                     if (!oot_ps3_fast3d_render_commands_interp(commands, index, t, last ? 0 : 1)) break;
                     oot_ps3_watchdog_kick();
                     const unsigned long long spent = oot_ps3_microseconds_now() - now;
@@ -524,12 +527,12 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
                     ++sLastDrawn;
                     if (last) break;
                 }
-                sTickStart += 50000ULL;
+                sTickStart += tickUs;
                 oot_ps3_early_trace("gfx-process: completed");
                 return true;
             }
             unsigned int vNow = oot_ps3_pacing_vblank();
-            if (!sSlotStarted || static_cast<int>(vNow - sSlotBase) > 3 || static_cast<int>(sSlotBase - vNow) > 6) {
+            if (!sSlotStarted || static_cast<int>(vNow - sSlotBase) > rate || static_cast<int>(sSlotBase - vNow) > 6) {
                 if (sSlotStarted) ++sReportResync; // more than a whole update late (or clock jump)
                 sSlotBase = vNow + 1U;
                 sSlotStarted = true;
@@ -552,8 +555,8 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
             // Steady 30: only even vblanks get a frame, so every frame stays on screen for
             // exactly two refreshes (1 or 2 draws per update, each interpolated to its time).
             const bool halfRate = interpolating && (frameMode == 3 || (frameMode == 4 && sAutoHalfRate));
-            for (int slot = interpolating ? 0 : 2; slot < 3; ++slot) {
-                const bool last = slot == 2;
+            for (int slot = interpolating ? 0 : rate - 1; slot < rate; ++slot) {
+                const bool last = slot == rate - 1;
                 if (halfRate && ((sSlotBase + static_cast<unsigned int>(slot) + 1U) & 1U) != 0U) continue;
                 if (halfRate) {
                     // Start this draw one vblank before its own, so its flip lands on it and
@@ -574,7 +577,7 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
                 unsigned long long gw0, tu0;
                 unsigned int tn0;
                 oot_ps3_rsx_draw_counters(&gw0, &tn0, &tu0);
-                const float t = static_cast<float>(slot + 1) / 3.0f;
+                const float t = static_cast<float>(slot + 1) / static_cast<float>(rate);
                 if (!oot_ps3_fast3d_render_commands_interp(commands, slot, t, last ? 0 : 1)) break;
                 drawn = true;
                 {
@@ -617,7 +620,7 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating) {
                 if (spent > sReportMaxDrawUs) sReportMaxDrawUs = spent;
                 ++sReportDrawn;
             }
-            sSlotBase += 3U;
+            sSlotBase += static_cast<unsigned int>(rate);
             if (drawn) {
                 if (++sReportTicks % 64 == 0) {
                     oot_ps3_heap_check(4, 0);
@@ -679,6 +682,7 @@ void oot_ps3_save_preload_start(void); // below: save slots read on a background
 static unsigned int sRenderJobSem, sRenderIdleSem;
 static Gfx* volatile sRenderJobCommands;
 static volatile bool sRenderJobInterpolate;
+static volatile int sRenderJobRate;
 static int sRenderThreadState = 0; // 0 not started, 1 running, -1 failed to start
 static int sRenderThreadEnabled = -1; // debug menu; USRDIR/render_thread_off
 void Matrix_Ps3SetRenderThread(void); // sys_matrix.c: this thread gets its own matrix stack
@@ -689,7 +693,7 @@ static void Ps3RenderThreadEntry(void*) {
     oot_ps3_early_trace("graph: render thread running");
     for (;;) {
         oot_ps3_sem_wait(sRenderJobSem);
-        Ps3DrawUpdate(sRenderJobCommands, sRenderJobInterpolate);
+        Ps3DrawUpdate(sRenderJobCommands, sRenderJobInterpolate, sRenderJobRate);
         oot_ps3_sem_post(sRenderIdleSem);
     }
 }
@@ -755,10 +759,11 @@ void Graph_ProcessGfxCommands(Gfx* commands) {
         if (sRenderThreadState == 1 && oot_ps3_render_thread_enabled()) {
             sRenderJobCommands = commands;
             sRenderJobInterpolate = interpolating;
+            sRenderJobRate = R_UPDATE_RATE;
             __sync_synchronize();
             oot_ps3_sem_post(sRenderJobSem); // the render thread returns the token when done
         } else {
-            Ps3DrawUpdate(commands, interpolating);
+            Ps3DrawUpdate(commands, interpolating, R_UPDATE_RATE);
             if (sRenderThreadState == 1) oot_ps3_sem_post(sRenderIdleSem);
         }
         if (sLastHandoffUs != 0) {
