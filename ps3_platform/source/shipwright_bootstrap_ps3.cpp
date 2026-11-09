@@ -877,14 +877,31 @@ void oot_ps3_save_preload_start(void) {
         oot_ps3_early_trace("trace: save slots loading in the background");
     }
 }
-void Save_Init(void) {
+// The slots are first needed by the file select screen (after the intro and PRESS
+// START); every save function waits here, normally long after loading finished.
+static void Ps3SaveWaitLoaded(void) {
     if (sSaveLoadState == 1) {
+        const unsigned long long t0 = oot_ps3_microseconds_now();
         oot_ps3_sem_wait(sSaveLoadDone);
         sSaveLoadState = 2;
-    } else if (sSaveLoadState != 2) {
+        char line[96];
+        snprintf(line, sizeof(line), "trace: save slots ready (waited %llu ms) found=%d%d%d",
+                 (oot_ps3_microseconds_now() - t0) / 1000ULL, gSaveMeta[0].valid, gSaveMeta[1].valid,
+                 gSaveMeta[2].valid);
+        oot_ps3_early_trace(line);
+    } else if (sSaveLoadState == 0) {
         for (int slot = 0; slot < 3; ++slot) LoadMeta(slot);
         sSaveLoadState = 2;
     }
+}
+void Save_Init(void) {
+    // Sram_InitSram (end of the N64 logo): don't wait for the background load (it
+    // held the screen ~4 s); the save functions below wait for it.
+    if (sSaveLoadState == 1) {
+        oot_ps3_early_trace("trace: save slots still loading; continuing");
+        return;
+    }
+    Ps3SaveWaitLoaded();
     char line[96];
     snprintf(line, sizeof(line), "trace: save slots found=%d%d%d", gSaveMeta[0].valid, gSaveMeta[1].valid,
              gSaveMeta[2].valid);
@@ -920,10 +937,12 @@ void Save_InitFile(int isDebug) {
     oot_ps3_early_trace("trace: save new file initialized");
 }
 void Save_LoadFile(void) {
+    Ps3SaveWaitLoaded();
     const int slot = gSaveContext.fileNum;
     TraceSave("load", slot, ReadSlot(slot, &gSaveContext));
 }
 void Save_SaveFile(void) {
+    Ps3SaveWaitLoaded();
     const int slot = gSaveContext.fileNum;
     const bool ok = WriteSlot(slot, gSaveContext);
     if (ok) BuildMeta(slot, gSaveContext);
@@ -932,19 +951,25 @@ void Save_SaveFile(void) {
 void Save_SaveGlobal(void) {}
 void Save_SaveSection(int sectionId) { (void)sectionId; Save_SaveFile(); }
 void Save_CopyFile(int from, int to) {
+    Ps3SaveWaitLoaded();
     if (from < 0 || from >= 3 || to < 0 || to >= 3) return;
     const bool ok = ReadSlot(from, &sSlotScratch) && WriteSlot(to, sSlotScratch);
     if (ok) BuildMeta(to, sSlotScratch);
     TraceSave("copy to", to, ok);
 }
 void Save_DeleteFile(int slot) {
+    Ps3SaveWaitLoaded();
     if (slot < 0 || slot >= 3) return;
     const bool ok = EraseSlot(slot);
     memset(&gSaveMeta[slot], 0, sizeof(gSaveMeta[slot]));
     TraceSave("delete", slot, ok);
 }
-u32 Save_Exist(int slot) { return slot >= 0 && slot < 3 && gSaveMeta[slot].valid; }
+u32 Save_Exist(int slot) {
+    Ps3SaveWaitLoaded();
+    return slot >= 0 && slot < 3 && gSaveMeta[slot].valid;
+}
 SaveFileMetaInfo* Save_GetSaveMetaInfo(int slot) {
+    Ps3SaveWaitLoaded();
     if (slot < 0 || slot >= 3) slot = 0;
     return &gSaveMeta[slot];
 }
