@@ -177,8 +177,11 @@ static void Ps3PrepareCutscene(int index) {
     }
 }
 
-/* From a state that isn't gameplay: straight into Play (or the title screen). */
-static void Ps3ApplyOutsidePlay(void) {
+/* From a state that isn't gameplay (N64 logo, file select, or the title demo, which is
+ * a Play state without a file): straight into a new Play state, like file select and
+ * Map Select do. The title demo must not keep running with a file loaded: drawing its
+ * HUD froze the game (2026-11-13 crash log). */
+static void Ps3ApplyOutsidePlay(PlayState* titlePlay) {
     char line[160];
     GameState* state = gGameState;
     if (sPs3Request == PS3_REQ_AGE) {
@@ -195,6 +198,9 @@ static void Ps3ApplyOutsidePlay(void) {
     Ps3EnsureGameSave(NULL);
     Ps3ClearSaveForWarp();
     Ps3SetAge(NULL, sPs3Request == PS3_REQ_CUTSCENE ? sPs3RequestAge : -1);
+    /* the age is already applied: graph.c must not swap the equipment again */
+    if (titlePlay != NULL) titlePlay->linkAgeOnLoad = gSaveContext.linkAge;
+    Audio_QueueSeqCmd(SEQ_PLAYER_BGM_MAIN << 24 | NA_BGM_STOP);
     gSaveContext.entranceIndex = sPs3RequestEntrance;
     if (sPs3Request == PS3_REQ_CUTSCENE) {
         Ps3PrepareCutscene(sPs3RequestCutscene);
@@ -230,8 +236,8 @@ static void Ps3ApplyRequest(PlayState* play) {
         sPs3Request = PS3_REQ_NONE;
         return;
     }
-    if (sPs3Request == PS3_REQ_AGE && gSaveContext.gameMode != GAMEMODE_NORMAL) {
-        sPs3Request = PS3_REQ_NONE;
+    if (gSaveContext.gameMode != GAMEMODE_NORMAL) { /* title demo */
+        Ps3ApplyOutsidePlay(play);
         return;
     }
     Ps3EnsureGameSave(play);
@@ -395,7 +401,7 @@ void oot_ps3_debug_game_tick(void) {
     static unsigned int sUpdates;
     PlayState* play = Ps3DebugPlay();
     if (play == NULL) {
-        if (sPs3Request != PS3_REQ_NONE && gGameState != NULL && gGameState->running) Ps3ApplyOutsidePlay();
+        if (sPs3Request != PS3_REQ_NONE && gGameState != NULL && gGameState->running) Ps3ApplyOutsidePlay(NULL);
         return;
     }
     Ps3ApplyRequest(play);
