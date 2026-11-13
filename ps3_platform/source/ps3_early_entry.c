@@ -913,6 +913,8 @@ void oot_ps3_trace_set_enabled(int on) {
     }
 }
 
+void oot_ps3_setup_screen(void); /* ps3_setup_screen.c */
+
 int main(int argc, char* argv[]) {
     (void)mkdir(OOT_PS3_LOG_DIR, 0777);
     sTraceEnabled = !PathExists(OOT_PS3_LOG_OFF);
@@ -926,6 +928,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     oot_ps3_early_trace("P200: early isolated RSX startup succeeded");
+    oot_ps3_setup_screen(); /* no oot.o2r yet (or TRIANGLE held): install it from USB */
     oot_ps3_early_trace("P200: native main wrapper entering Shipwright");
     return oot_shipwright_main(argc, argv);
 }

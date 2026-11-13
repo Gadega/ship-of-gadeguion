@@ -446,6 +446,24 @@ int oot_ps3_pad_select_held(void) {
     return 0;
 }
 
+/* Setup screen (ps3_setup_screen.c): buttons held on any controller.
+ * 1 up, 2 down, 4 cross, 8 circle, 0x10 triangle, 0x20 start. */
+unsigned int oot_ps3_pad_menu_buttons(void) {
+    unsigned int mask = 0;
+    int i;
+    for (i = 0; i < MAXCONTROLLERS; ++i) {
+        const padData* d = &sPs3LastPad[i];
+        if (!sPs3HavePad[i]) continue;
+        if (d->BTN_UP) mask |= 0x01U;
+        if (d->BTN_DOWN) mask |= 0x02U;
+        if (d->BTN_CROSS) mask |= 0x04U;
+        if (d->BTN_CIRCLE) mask |= 0x08U;
+        if (d->BTN_TRIANGLE) mask |= 0x10U;
+        if (d->BTN_START) mask |= 0x20U;
+    }
+    return mask;
+}
+
 void osContGetReadData(OSContPad* pads) {
     int i;
     if (pads == NULL) return;

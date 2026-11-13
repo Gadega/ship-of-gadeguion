@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_ELF="$ROOT/native-link-check/oot-native.elf"
 TARGET_NAME="oot_ps3_probe_v48"
 TITLE="Ship of Gadeguion"
+PORT_VERSION="1.2.0-test"  # shown on the setup screen; bump with APP_VER per release
 APP_VER="01.10"  # Ship of Gadeguion 1.0.1 (shown in the XMB game information)
 APPID="OOTP30048"
 CONTENTID="UP0001-${APPID}_00-OOTPS3RUNTIMEVM0"
@@ -439,7 +440,9 @@ echo "NPDRM SELF: $(wc -c < "$TARGET_SELF") bytes"
 
 rm -rf "$PKG_BUILD"
 mkdir -p "$PKG_BUILD/pkg/USRDIR"
-cp "${PS3DEV:-/usr/local/ps3dev}/bin/ICON0.PNG" "$PKG_BUILD/pkg/ICON0.PNG"
+# Our own text icon (no game artwork; tools/packager/make_default_icon.py). The game draws
+# the title logo from the player's oot.o2r over it after the first-boot setup.
+cp "$ROOT/ps3_platform/assets/ICON0.PNG" "$PKG_BUILD/pkg/ICON0.PNG"
 make_self_npdrm "$TARGET_ELF" "$PKG_BUILD/pkg/USRDIR/EBOOT.BIN" "$CONTENTID" >/dev/null
 python3 - "${PS3DEV:-/usr/local/ps3dev}/bin/sfo.xml" "$PKG_BUILD/sfo.xml" "$APP_VER" <<'PY'
 import re, sys
@@ -456,7 +459,7 @@ pkg --contentid "$CONTENTID" "$PKG_BUILD/pkg/" "$TARGET_PKG"
 cp "$TARGET_PKG" "$ALIAS_PKG"
 # Keep the OoT PS3 Packager in step with every build: its payload (EBOOT.BIN, PARAM.SFO)
 # and sources (build_exe.bat makes the .exe from tools/packager or a synced copy).
-cp "$PKG_BUILD/pkg/USRDIR/EBOOT.BIN" "$PKG_BUILD/pkg/PARAM.SFO" "$ROOT/tools/packager/payload/"
+cp "$PKG_BUILD/pkg/USRDIR/EBOOT.BIN" "$PKG_BUILD/pkg/PARAM.SFO" "$PKG_BUILD/pkg/ICON0.PNG" "$ROOT/tools/packager/payload/"
 # Optional: OOT_PS3_PACKAGER_SYNC_DIR=<folder with payload/> mirrors it there too.
 WIN_PACKAGER="${OOT_PS3_PACKAGER_SYNC_DIR:-}"
 if [ -n "$WIN_PACKAGER" ] && [ -d "$WIN_PACKAGER/payload" ]; then

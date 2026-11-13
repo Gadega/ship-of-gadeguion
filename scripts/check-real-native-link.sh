@@ -131,6 +131,14 @@ echo "Debug menu (R3): ${OOT_PS3_DEBUG_MENU:-1}"
     -c "$ROOT/ps3_platform/source/ps3_debug_overlay.c" \
     -o "$OUT/objects/ps3_debug_overlay.o" >"$OUT/logs/ps3-debug-overlay.log" 2>&1 || {
     echo 'BLOCKED compiling debug menu overlay'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/ps3-debug-overlay.log"; exit 3; }
+# First-boot setup screen (installs oot.o2r from USB, XMB icon via portlibs zlib).
+PS3_PORTLIBS="${PS3DEV:-/usr/local/ps3dev}/portlibs/ppu"
+"${cc_run[@]}" -std=gnu11 -O2 -mcpu=cell -ffunction-sections -fdata-sections -Wall -Wextra -Werror \
+    "-DOOT_PS3_PORT_VERSION=\"$(grep -m1 '^PORT_VERSION=' "$ROOT/scripts/package-real-native.sh" | cut -d'"' -f2)\"" \
+    "-I$PS3_SDK_ROOT/ppu/include" "-I$PS3_PORTLIBS/include" \
+    -c "$ROOT/ps3_platform/source/ps3_setup_screen.c" \
+    -o "$OUT/objects/ps3_setup_screen.o" >"$OUT/logs/ps3-setup-screen.log" 2>&1 || {
+    echo 'BLOCKED compiling setup screen'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/ps3-setup-screen.log"; exit 3; }
 # SPU audio mixer: the SPU program (spu-gcc), embedded as a C array, and its PPU driver.
 SPU_GCC="${PS3_SDK_ROOT}/spu/bin/spu-gcc"
 [ -x "$SPU_GCC" ] || SPU_GCC="$(command -v spu-gcc || true)"
@@ -172,7 +180,7 @@ PY
     echo 'BLOCKED compiling priority-105 midpoint marker'; grep -m2 -E 'fatal error:|error:' "$OUT/logs/ctor-mid105.log"; exit 3; }
 "${cc_run[@]}" -std=gnu11 -O2 -mcpu=cell -Wall -Wextra -Werror \
     "-I$PS3_SDK_ROOT/ppu/include" \
-    "-DOOT_PS3_APP_VER=\"$(grep -m1 '^APP_VER=' "$ROOT/scripts/package-real-native.sh" | cut -d'"' -f2)\"" \
+    "-DOOT_PS3_APP_VER=\"$(grep -m1 '^PORT_VERSION=' "$ROOT/scripts/package-real-native.sh" | cut -d'"' -f2)\"" \
     -c "$ROOT/ps3_platform/source/ps3_early_entry.c" \
     -o "$OUT/objects/ps3_early_entry.o" >"$OUT/logs/early-entry.log" 2>&1 || {
     echo 'BLOCKED compiling PS3 early entry'; grep -m2 -E 'fatal error:|error:' "$OUT/logs/early-entry.log"; exit 3; }
@@ -448,7 +456,7 @@ if ! OOT_PS3_FAST3D_OBJECT_MODE=1 bash "$ROOT/scripts/check-ps3-fast3d-interpret
 fi
 echo 'Fresh native Fast3D interpreter, PS3 O2R adapter, and renderer compiled'
 
-objects=("$OUT/objects/bootstrap.o" "$OUT/objects/vanilla.o" "$OUT/objects/rsx_screen.o" "$OUT/objects/fast3d_rsx_ps3.o" "$OUT/objects/ps3_process_param.o" "$OUT/objects/ps3_sbrk_fixed.o" "$OUT/objects/ps3_newlib_lock.o" "$OUT/objects/ps3_glob_fixed.o" "$OUT/objects/ps3_early_entry.o" "$OUT/objects/ps3_jpeg.o" "$OUT/objects/ps3_audio.o" "$OUT/objects/ps3_savedata.o" "$OUT/objects/ps3_debug_overlay.o" "$OUT/objects/ps3_heap_guard.o" "$OUT/objects/ps3_spu_audio.o" "$OUT/objects/shipwright_video.o" \
+objects=("$OUT/objects/bootstrap.o" "$OUT/objects/vanilla.o" "$OUT/objects/rsx_screen.o" "$OUT/objects/fast3d_rsx_ps3.o" "$OUT/objects/ps3_process_param.o" "$OUT/objects/ps3_sbrk_fixed.o" "$OUT/objects/ps3_newlib_lock.o" "$OUT/objects/ps3_glob_fixed.o" "$OUT/objects/ps3_early_entry.o" "$OUT/objects/ps3_jpeg.o" "$OUT/objects/ps3_audio.o" "$OUT/objects/ps3_savedata.o" "$OUT/objects/ps3_debug_overlay.o" "$OUT/objects/ps3_setup_screen.o" "$OUT/objects/ps3_heap_guard.o" "$OUT/objects/ps3_spu_audio.o" "$OUT/objects/shipwright_video.o" \
     "$OUT/objects/software_renderer.o" "$OUT/objects/mixer.o")
 if ! "$LD_BIN" -r -o "$OUT/shipwright-native-bootstrap.o" "$BASE" "${objects[@]}" >"$OUT/logs/reloc-link.log" 2>&1; then
     echo 'BLOCKED: native bootstrap relocatable link failed'
@@ -704,7 +712,7 @@ echo "GameInteractor executor hooks wrapped: ${#gi_wrap_flags[@]}"
 if ! "$CXX_BIN" -mcpu=cell -Wl,--gc-sections -Wl,-Map,"$OUT/oot-native.map" \
     -L"$libdir" -L"$sdk_libdir" -o "$OUT/oot-native.elf" "${final_link_objects[@]}" \
     -Wl,--wrap=gcmInitBodyEx -Wl,--wrap=gfx_create_framebuffer -Wl,--wrap=gfx_texture_cache_clear -Wl,--wrap=GameInteractor_Should -Wl,--wrap=__malloc_lock -Wl,--wrap=__malloc_unlock -Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=calloc -Wl,--wrap=realloc "${gi_wrap_flags[@]}" "$OUT/objects/ps3_gi_noop.o" \
-    -lrsx -lgcm_sys -lio -lsysutil -laudio -lrt "$OUT/objects/ps3_ctor_mid105.o" \
+    -lrsx -lgcm_sys -lio -lsysutil -laudio -lrt "$OUT/objects/ps3_ctor_mid105.o" "$PS3_PORTLIBS/lib/libz.a" \
     -llv2 -lm >"$OUT/logs/final-link.log" 2>&1; then
     echo 'FINAL LINK: BLOCKED'
     python3 - "$OUT/logs/final-link.log" "$OUT/final-undefined.txt" <<'PY'
