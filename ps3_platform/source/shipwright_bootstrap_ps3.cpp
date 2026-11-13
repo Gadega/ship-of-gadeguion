@@ -422,6 +422,7 @@ void oot_ps3_tri_fast_stats(unsigned int* fast, unsigned int* full);     // inte
 void oot_ps3_rsx_draw_counters(unsigned long long* gpuWaitUs, unsigned int* texUploads,
                                unsigned long long* texUploadUs); // fast3d_rsx_ps3.c
 void oot_ps3_heap_check(int maxReports, int fromWatchdog); // ps3_heap_guard.c
+void oot_ps3_rsx_take_tnl_timing(char* out, unsigned int size); // fast3d_rsx_ps3.c
 void oot_ps3_rsx_take_tnl_stats(unsigned int* tnlDraws, unsigned int* tnlVerts, unsigned int* cpuDraws,
                                 unsigned int* vpSwitches, unsigned int* constVec4, unsigned int* combHits,
                                 unsigned int* combMisses); // fast3d_rsx_ps3.c
@@ -651,6 +652,8 @@ static bool Ps3DrawUpdate(Gfx* commands, bool interpolating, int rate) {
                                  "constVec4=%u comb hit/miss=%u/%u triangles fast/full=%u/%u",
                                  tnlDraws, tnlVerts, cpuDraws, vpSwitches, constVec4, combHits, combMisses, triFast,
                                  triFull);
+                        oot_ps3_early_trace(line);
+                        oot_ps3_rsx_take_tnl_timing(line, sizeof(line));
                         oot_ps3_early_trace(line);
                     }
                     sReportDrawn = sReportSkipped = sReportResync = 0;

@@ -7,6 +7,7 @@
 #include <sys/thread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/systime.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <math.h>
@@ -1605,9 +1606,28 @@ static void Ps3TnlUploadDrawConsts(const float* consts) {
     }
 }
 
+/* Where a GPU-path draw's CPU time goes (timebase ticks, reported per 64 updates). */
+static unsigned long long sTnlTicks[5]; /* 0 copy records, 1 constants, 2 textures+state, 3 draw call, 4 calls */
+static inline unsigned long long Ps3Tb(void) {
+    unsigned long long t;
+    __asm__ volatile("mftb %0" : "=r"(t));
+    return t;
+}
+void oot_ps3_rsx_take_tnl_timing(char* out, unsigned int size) {
+    const unsigned long long hz = sysGetTimebaseFrequency() ? sysGetTimebaseFrequency() : 79800000ULL;
+    const unsigned long long n = sTnlTicks[4] ? sTnlTicks[4] : 1ULL;
+    snprintf(out, size,
+             "graph: Play tnl-time/64 draws=%llu per draw: copy=%.2f consts=%.2f texstate=%.2f drawcall=%.2f us",
+             sTnlTicks[4], (double)sTnlTicks[0] * 1e6 / (double)hz / (double)n,
+             (double)sTnlTicks[1] * 1e6 / (double)hz / (double)n, (double)sTnlTicks[2] * 1e6 / (double)hz / (double)n,
+             (double)sTnlTicks[3] * 1e6 / (double)hz / (double)n);
+    memset(sTnlTicks, 0, sizeof(sTnlTicks));
+}
+
 int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int drawDirty, uint32_t firstConst,
                          uint32_t numConst, uint32_t texture0_id, uint32_t texture1_id, int alpha, int cullMode,
                          int cullFlip, int floatAttribs) {
+    unsigned long long tbA, tbB;
     GpuTexture* t0;
     GpuTexture* t1;
     uint8_t* dst;
@@ -1619,6 +1639,7 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
     static unsigned int sCheckDraw = 0;
     if (!prepared || !vpTnl || !records || !count || count * units > TNL_MAX_RECORDS || numConst > 460U) return 0;
     t0us = oot_ps3_microseconds_now();
+    tbA = Ps3Tb();
     (void)drawDirty; /* the constant cache compares with what the RSX has */
     if (floatAttribs) tnlCursor = (tnlCursor + 2U) / 3U * 3U; /* whole 48-byte vertices from the base */
     if (tnlCursor + count * units > TNL_MAX_RECORDS) {
@@ -1648,6 +1669,9 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
         Ps3TnlCpuCheck((const uint8_t*)records, consts, numConst, (int)sCheckDraw);
         ++sChecks;
     }
+    tbB = Ps3Tb();
+    sTnlTicks[0] += tbB - tbA;
+    tbA = tbB;
     t0 = Ps3Texture(texture0_id);
     t1 = Ps3Texture(texture1_id);
     if (!t0->pixels || !t1->pixels) return 0;
@@ -1680,6 +1704,9 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
                                            consts + firstConst * 4U);
         sTnlConstUploads += numConst - firstConst;
     }
+    tbB = Ps3Tb();
+    sTnlTicks[1] += tbB - tbA;
+    tbA = tbB;
     {
         const int wantFp = (sLeanEdge > 0.5f || sLeanThreshold > 0.5f) ? 2 : 1;
         if (wantFp != sCurrentFp) {
@@ -1765,11 +1792,16 @@ int oot_ps3_rsx_tnl_draw(const void* records, uint32_t count, float* consts, int
         sTnlFront = front;
         sTnlCacheValid = 1;
     }
+    tbB = Ps3Tb();
+    sTnlTicks[2] += tbB - tbA;
+    tbA = tbB;
     if (sTnlIndexDraw) {
         rsxDrawIndexArray(ctx, GCM_TYPE_TRIANGLES, indexOffset, count, GCM_INDEX_TYPE_16B, GCM_LOCATION_RSX);
     } else {
         rsxDrawVertexArray(ctx, GCM_TYPE_TRIANGLES, tnlCursor / units, count);
     }
+    sTnlTicks[3] += Ps3Tb() - tbA;
+    ++sTnlTicks[4];
     tnlCursor += count * units;
     ++sTnlDraws;
     sTnlVerts += count;
