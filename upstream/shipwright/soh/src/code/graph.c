@@ -901,8 +901,7 @@ static void RunFrame() {
                             sPs3UpdAcc = sPs3GfxAcc = sPs3ResAcc = 0;
                         }
                     }
-                    GraphPs3Trace(playFrameTrace);
-                    oot_ps3_early_trace_flush_usb();
+                    GraphPs3Trace(playFrameTrace); /* the log writer thread flushes/fsyncs */
                 }
                 if (completedFrames == 1U) oot_ps3_trace_compact_play();
                 if (play->transitionMode == TRANS_MODE_OFF && play->transitionTrigger == TRANS_TRIGGER_OFF) {

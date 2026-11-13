@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/thread.h>
+#include <sys/stat.h>
+#include <time.h>
 
 /* Yield the PPU thread (for C++ files that can't include PS3 system headers). */
 void sysThreadYieldPs3(void) {
@@ -167,45 +169,196 @@ unsigned long long oot_ps3_microseconds_now(void) {
     return (tb / timebaseHz) * 1000000ULL + ((tb % timebaseHz) * 1000000ULL) / timebaseHz;
 }
 
+/* ---- Player logs (2026-11-12) ----
+ * Always on (USRDIR/logs/log_off disables): the current session goes to
+ * USRDIR/logs/latest.txt (latest-part1.txt holds the earlier 8 MB when it rolls over).
+ * At boot the last session becomes previous.txt; if it never reached a clean exit
+ * (crash, freeze, power off) it is also kept as logs/crash-<UTC date>.txt (newest 5).
+ * Any USB drive (/dev_usb000..007, checked at boot and every 5 s) gets a live copy,
+ * ShipOfGadeguion-log.txt, and every crash log as ShipOfGadeguion-crash-<date>.txt,
+ * so players can just drag a file off the stick. */
+#define OOT_PS3_USRDIR "/dev_hdd0/game/OOTP30048/USRDIR"
+#define OOT_PS3_LOG_DIR OOT_PS3_USRDIR "/logs"
+#define OOT_PS3_LOG_LATEST OOT_PS3_LOG_DIR "/latest.txt"
+#define OOT_PS3_LOG_PART1 OOT_PS3_LOG_DIR "/latest-part1.txt"
+#define OOT_PS3_LOG_PREVIOUS OOT_PS3_LOG_DIR "/previous.txt"
+#define OOT_PS3_LOG_RUNNING OOT_PS3_LOG_DIR "/session-running"
+#define OOT_PS3_LOG_OFF OOT_PS3_LOG_DIR "/log_off"
+#define OOT_PS3_USB_LOG_NAME "ShipOfGadeguion-log.txt"
+#define OOT_PS3_USB_CRASH_PREFIX "ShipOfGadeguion-"
+#ifndef OOT_PS3_APP_VER
+#define OOT_PS3_APP_VER "dev"
+#endif
+enum { LOG_ROLL_BYTES = 8 * 1024 * 1024, LOG_KEEP_CRASHES = 5 };
+
 static const char* const sTracePaths[] = {
-    "/dev_hdd0/oot_ps3_v48_audio_probe_boot.txt",
-    "/dev_hdd0/tmp/oot_ps3_v48_audio_probe_boot.txt",
-    "/dev_hdd0/game/OOTP30048/USRDIR/audio_probe_boot_trace.txt",
-    "oot_ps3_v48_audio_probe_boot.txt",
+    OOT_PS3_LOG_LATEST,
 };
 static unsigned int TraceLength(const char* text);
 
-/* Optional USB mirror. Keep its handle open so hundreds of trace lines do
- * not repeatedly mount/open/fsync a removable drive during the boot probe. */
 static int sUsbTraceFd = -1;
-static int sUsbTraceChecked;
-static unsigned int sUsbTraceLines;
+static char sUsbRoot[16];
+static unsigned long long sLogBytes;
 static unsigned int sBootTraceLines;
 static int sCompactTitleTrace;
 static int sCompactLinkSkeletonTrace;
 static int sCompactPlayTrace;
 static int sFullDetailTrace;
-/* Four backup trace targets are opened once during main's trace reset.
- * Reopening all four for every title-frame probe cost thousands of LV2
- * filesystem syscalls during the bounded renderer window. */
-static int sTraceDescriptors[] = { -1, -1, -1, -1 };
+static int sTraceDescriptors[] = { -1 };
 
-static void UsbTrace(const char* message, int truncate) {
-    if (!sUsbTraceChecked) {
-        sUsbTraceFd = open("/dev_usb000/oot_ps3_v48_audio_probe_boot.txt",
-                           O_WRONLY | O_CREAT | (truncate ? O_TRUNC : O_APPEND), 0666);
-        sUsbTraceChecked = 1;
+static int PathExists(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+static void CopyFileToFd(const char* path, int out) {
+    static char buffer[64 * 1024];
+    const int in = open(path, O_RDONLY);
+    int n;
+    if (in < 0) return;
+    while ((n = (int)read(in, buffer, sizeof(buffer))) > 0) {
+        if (write(out, buffer, (size_t)n) != n) break;
     }
-    if (sUsbTraceFd < 0) return;
-    (void)write(sUsbTraceFd, message, TraceLength(message));
-    (void)write(sUsbTraceFd, "\n", 1);
-    if ((++sUsbTraceLines & 63U) == 0U) (void)fsync(sUsbTraceFd);
+    (void)close(in);
+}
+
+/* The current session's log (both parts) into a new file. */
+static int WriteSessionCopy(const char* path, const char* header, const char* part1, const char* latest) {
+    const int out = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (out < 0) return 0;
+    if (header != 0) (void)write(out, header, TraceLength(header));
+    if (part1 != 0) CopyFileToFd(part1, out);
+    if (latest != 0) CopyFileToFd(latest, out);
+    (void)fsync(out);
+    (void)close(out);
+    return 1;
+}
+
+static void UtcStamp(char* out, unsigned int size) {
+    static unsigned int counter;
+    time_t now = time(0);
+    struct tm parts;
+    if (now > 0 && gmtime_r(&now, &parts) != 0) {
+        snprintf(out, size, "%04d%02d%02d-%02d%02d%02d", parts.tm_year + 1900, parts.tm_mon + 1, parts.tm_mday,
+                 parts.tm_hour, parts.tm_min, parts.tm_sec);
+        if (counter++ != 0) {
+            const unsigned int len = TraceLength(out);
+            snprintf(out + len, size - len, "-%u", counter);
+        }
+    } else {
+        snprintf(out, size, "unknown-time-%u", ++counter);
+    }
+}
+
+/* Names in logs/ starting with "crash-": keep the newest LOG_KEEP_CRASHES (names sort by date). */
+static void PruneCrashLogs(void) {
+    char names[32][64];
+    unsigned int count = 0, i, j;
+    s32 dir;
+    sysFSDirent entry;
+    u64 got = 0;
+    if (sysLv2FsOpenDir(OOT_PS3_LOG_DIR, &dir) != 0) return;
+    while (sysLv2FsReadDir(dir, &entry, &got) == 0 && got != 0 && count < 32) {
+        if (strncmp(entry.d_name, "crash-", 6) == 0 && TraceLength(entry.d_name) < 64) {
+            strcpy(names[count++], entry.d_name);
+        }
+    }
+    (void)sysLv2FsCloseDir(dir);
+    for (i = 0; i < count; ++i)
+        for (j = i + 1; j < count; ++j)
+            if (strcmp(names[j], names[i]) < 0) {
+                char swap[64];
+                strcpy(swap, names[i]);
+                strcpy(names[i], names[j]);
+                strcpy(names[j], swap);
+            }
+    for (i = 0; i + LOG_KEEP_CRASHES < count; ++i) {
+        char path[128];
+        snprintf(path, sizeof(path), "%s/%s", OOT_PS3_LOG_DIR, names[i]);
+        (void)unlink(path);
+    }
+}
+
+static int UsbFindRoot(char* root, unsigned int size) {
+    int i;
+    for (i = 0; i < 8; ++i) {
+        struct stat st;
+        snprintf(root, size, "/dev_usb%03d", i);
+        if (stat(root, &st) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Every logs/crash-*.txt not yet on the stick -> <usb>/ShipOfGadeguion-crash-*.txt */
+static void UsbDeliverCrashLogs(const char* root) {
+    s32 dir;
+    sysFSDirent entry;
+    u64 got = 0;
+    if (sysLv2FsOpenDir(OOT_PS3_LOG_DIR, &dir) != 0) return;
+    while (sysLv2FsReadDir(dir, &entry, &got) == 0 && got != 0) {
+        char from[160], to[160];
+        if (strncmp(entry.d_name, "crash-", 6) != 0 || TraceLength(entry.d_name) > 100) continue;
+        snprintf(to, sizeof(to), "%s/%s%.100s", root, OOT_PS3_USB_CRASH_PREFIX, entry.d_name);
+        if (PathExists(to)) continue;
+        snprintf(from, sizeof(from), "%s/%.100s", OOT_PS3_LOG_DIR, entry.d_name);
+        (void)WriteSessionCopy(to, 0, 0, from);
+    }
+    (void)sysLv2FsCloseDir(dir);
+}
+
+/* Caller holds the flush lock (or the writer thread isn't running yet). */
+static void UsbAttach(void) {
+    char root[16], path[96];
+    int fd;
+    if (sUsbTraceFd >= 0 || !UsbFindRoot(root, sizeof(root))) return;
+    UsbDeliverCrashLogs(root);
+    snprintf(path, sizeof(path), "%s/%s", root, OOT_PS3_USB_LOG_NAME);
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) return;
+    if (sTraceDescriptors[0] >= 0) {
+        CopyFileToFd(OOT_PS3_LOG_PART1, fd);
+        CopyFileToFd(OOT_PS3_LOG_LATEST, fd);
+    }
+    (void)fsync(fd);
+    strcpy(sUsbRoot, root);
+    sUsbTraceFd = fd;
+}
+
+static void UsbDetach(void) {
+    if (sUsbTraceFd >= 0) (void)close(sUsbTraceFd);
+    sUsbTraceFd = -1;
+    sUsbRoot[0] = '\0';
+}
+
+static void UsbWrite(const char* data, unsigned int length) {
+    if (sUsbTraceFd < 0 || length == 0) return;
+    if (write(sUsbTraceFd, data, length) != (int)length) UsbDetach(); /* stick pulled out or full */
+}
+
+static void UsbWriteLine(const char* message) {
+    UsbWrite(message, TraceLength(message));
+    UsbWrite("\n", 1);
+}
+
+/* latest.txt reached LOG_ROLL_BYTES: it becomes latest-part1.txt (the older part is dropped). */
+static void LogRollOver(void) {
+    static const char note[] = "log: continued; the previous 8 MB of this session are in latest-part1.txt\n";
+    if (sTraceDescriptors[0] < 0) return;
+    (void)close(sTraceDescriptors[0]);
+    (void)unlink(OOT_PS3_LOG_PART1);
+    (void)rename(OOT_PS3_LOG_LATEST, OOT_PS3_LOG_PART1);
+    sTraceDescriptors[0] = open(OOT_PS3_LOG_LATEST, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (sTraceDescriptors[0] >= 0) (void)write(sTraceDescriptors[0], note, sizeof(note) - 1U);
+    sLogBytes = 0;
+    if (sUsbTraceFd >= 0) { /* keep the stick copy = part1 + latest */
+        UsbDetach();
+        UsbAttach();
+    }
 }
 
 /* Asynchronous trace: once the writer thread runs, oot_ps3_early_trace only appends to
- * this buffer and the thread writes it to the trace files every 200 ms. Synchronous
- * writes (4 HDD files + USB per line) cost milliseconds each and stalled gameplay,
- * e.g. tree/bush spawners logging every spawn/delete. Exit/watchdog paths flush first. */
+ * this buffer and the thread writes it to the log files every 200 ms. Exit/watchdog
+ * paths flush first. */
 enum { TRACE_ASYNC_BYTES = 256 * 1024 };
 static char sTraceAsync[TRACE_ASYNC_BYTES];
 static char sTraceAsyncOut[TRACE_ASYNC_BYTES];
@@ -225,7 +378,6 @@ static void TraceSpinUnlock(volatile int* lock) {
 
 static void TraceAsyncFlush(void) {
     unsigned int length;
-    unsigned int i;
     TraceSpinLock(&sTraceFlushLock);
     TraceSpinLock(&sTraceAsyncLock);
     length = sTraceAsyncLen;
@@ -233,9 +385,10 @@ static void TraceAsyncFlush(void) {
     sTraceAsyncLen = 0;
     TraceSpinUnlock(&sTraceAsyncLock);
     if (length != 0) {
-        for (i = 0; i < sizeof(sTraceDescriptors) / sizeof(sTraceDescriptors[0]); ++i)
-            if (sTraceDescriptors[i] >= 0) (void)write(sTraceDescriptors[i], sTraceAsyncOut, length);
-        if (sUsbTraceFd >= 0) (void)write(sUsbTraceFd, sTraceAsyncOut, length);
+        if (sTraceDescriptors[0] >= 0) (void)write(sTraceDescriptors[0], sTraceAsyncOut, length);
+        UsbWrite(sTraceAsyncOut, length);
+        sLogBytes += length;
+        if (sLogBytes >= LOG_ROLL_BYTES) LogRollOver();
     }
     TraceSpinUnlock(&sTraceFlushLock);
 }
@@ -272,24 +425,90 @@ static void TraceAsyncThread(void* argument) {
     for (;;) {
         usleep(200000);
         TraceAsyncFlush();
-        if ((++ticks % 10U) == 0U && sUsbTraceFd >= 0) (void)fsync(sUsbTraceFd);
+        ++ticks;
+        if ((ticks % 10U) == 0U) {
+            TraceSpinLock(&sTraceFlushLock);
+            if (sTraceDescriptors[0] >= 0) (void)fsync(sTraceDescriptors[0]);
+            if (sUsbTraceFd >= 0) (void)fsync(sUsbTraceFd);
+            TraceSpinUnlock(&sTraceFlushLock);
+        }
+        if ((ticks % 25U) == 0U && sUsbTraceFd < 0) { /* a USB drive plugged in later */
+            TraceSpinLock(&sTraceFlushLock);
+            UsbAttach();
+            TraceSpinUnlock(&sTraceFlushLock);
+            if (sUsbTraceFd >= 0) oot_ps3_early_trace("trace: USB drive found; log copied to it");
+        }
     }
 }
 
 static void TraceAsyncStart(void) {
     if (sTraceAsyncOn) return;
-    if (!sUsbTraceChecked) UsbTrace("trace: USB mirror check", 0);
+    UsbAttach();
+    if (sUsbTraceFd >= 0) {
+        char line[96];
+        snprintf(line, sizeof(line), "trace: log also written to %s/%s", sUsbRoot, OOT_PS3_USB_LOG_NAME);
+        oot_ps3_early_trace(line);
+    }
     if (sysThreadCreate(&sTraceAsyncThread, TraceAsyncThread, NULL, 1800, 64 * 1024, 0, "oot-trace") == 0) {
         sTraceAsyncOn = 1;
     }
 }
 
 void oot_ps3_early_trace_flush_usb(void) {
-    unsigned int i;
     if (sTraceAsyncOn) TraceAsyncFlush();
-    for (i = 0; i < sizeof(sTraceDescriptors) / sizeof(sTraceDescriptors[0]); ++i)
-        if (sTraceDescriptors[i] >= 0) (void)fsync(sTraceDescriptors[i]);
+    TraceSpinLock(&sTraceFlushLock);
+    if (sTraceDescriptors[0] >= 0) (void)fsync(sTraceDescriptors[0]);
     if (sUsbTraceFd >= 0) (void)fsync(sUsbTraceFd);
+    TraceSpinUnlock(&sTraceFlushLock);
+}
+
+/* The game is about to leave because of a freeze (watchdog): keep this session as a
+ * crash log on the HDD and on the USB drive right away. */
+void oot_ps3_log_save_crash(const char* reason) {
+    char stamp[48], path[160], header[256];
+    if (sTraceDescriptors[0] < 0) return;
+    oot_ps3_early_trace_flush_usb();
+    TraceSpinLock(&sTraceFlushLock);
+    UtcStamp(stamp, sizeof(stamp));
+    snprintf(header, sizeof(header), "Ship of Gadeguion %s crash log (%s). Please share this file.\n",
+             OOT_PS3_APP_VER, reason != 0 ? reason : "crash");
+    snprintf(path, sizeof(path), "%s/crash-%s.txt", OOT_PS3_LOG_DIR, stamp);
+    (void)WriteSessionCopy(path, header, OOT_PS3_LOG_PART1, OOT_PS3_LOG_LATEST);
+    PruneCrashLogs();
+    if (sUsbTraceFd < 0) UsbAttach();
+    if (sUsbRoot[0] != '\0') UsbDeliverCrashLogs(sUsbRoot);
+    (void)unlink(OOT_PS3_LOG_RUNNING); /* already saved: not again at the next boot */
+    TraceSpinUnlock(&sTraceFlushLock);
+}
+
+/* Clean exit (SELECT / XMB Quit Game). */
+static void LogSessionEndedCleanly(void) {
+    (void)unlink(OOT_PS3_LOG_RUNNING);
+}
+
+/* Boot: last session -> previous.txt (+ crash copy if it didn't end cleanly). */
+static void LogBootRotate(void) {
+    const int crashed = PathExists(OOT_PS3_LOG_RUNNING);
+    (void)mkdir(OOT_PS3_LOG_DIR, 0777);
+    if (PathExists(OOT_PS3_LOG_LATEST) || PathExists(OOT_PS3_LOG_PART1)) {
+        (void)WriteSessionCopy(OOT_PS3_LOG_PREVIOUS, 0, OOT_PS3_LOG_PART1, OOT_PS3_LOG_LATEST);
+        (void)unlink(OOT_PS3_LOG_PART1);
+        (void)unlink(OOT_PS3_LOG_LATEST);
+        if (crashed) {
+            char stamp[48], path[160];
+            UtcStamp(stamp, sizeof(stamp));
+            snprintf(path, sizeof(path), "%s/crash-%s.txt", OOT_PS3_LOG_DIR, stamp);
+            (void)WriteSessionCopy(path,
+                                   "Ship of Gadeguion crash log: this session did not end cleanly "
+                                   "(crash, freeze or power off). Please share this file.\n",
+                                   OOT_PS3_LOG_PREVIOUS, 0);
+            PruneCrashLogs();
+        }
+    }
+    {
+        const int marker = open(OOT_PS3_LOG_RUNNING, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (marker >= 0) (void)close(marker);
+    }
 }
 
 static unsigned int TraceLength(const char* text) {
@@ -323,8 +542,6 @@ static void RawTraceMessageToPath(const char* path, const char* message,
 
 static void RawTraceMarker(const char* message, u64 length, int truncate) {
     RawTraceMessageToPath("/dev_hdd0/tmp/oot_ps3_v48_audio_probe_premain.txt",
-                          message, length, truncate);
-    RawTraceMessageToPath("/dev_hdd0/oot_ps3_v48_audio_probe_premain.txt",
                           message, length, truncate);
 }
 
@@ -488,10 +705,9 @@ void oot_ps3_trace_top(char* out, unsigned int size) {
     memset(sTraceTopPtr, 0, sizeof(sTraceTopPtr));
     memset(sTraceTopCount, 0, sizeof(sTraceTopCount));
 }
-/* Trace files are written only when USRDIR/trace_on exists (release default: off -
- * they cost 4 HDD files + USB). The watchdog's step bookkeeping runs either way. */
+/* Log files are on by default (USRDIR/logs/log_off turns them off). The watchdog's
+ * step bookkeeping runs either way. */
 static int sTraceEnabled;
-#define OOT_PS3_TRACE_ON_PATH "/dev_hdd0/game/OOTP30048/USRDIR/trace_on"
 
 unsigned int oot_ps3_trace_count(void) {
     return sPs3TraceCount;
@@ -612,7 +828,7 @@ void oot_ps3_early_trace(const char* message) {
         for (index = 0; index < sizeof(sTracePaths) / sizeof(sTracePaths[0]); ++index) {
             TraceToDescriptor(index, message, sync && index == 0U);
         }
-        UsbTrace(message, 0);
+        UsbWriteLine(message);
     }
     if (activateLink)
         oot_ps3_early_trace("trace: compact Link limb success markers active");
@@ -653,44 +869,56 @@ static void OotPs3TraceReset(const char* message) {
         sTraceDescriptors[index] = open(sTracePaths[index], O_WRONLY | O_CREAT | O_TRUNC, 0666);
         TraceToDescriptor(index, message, 1);
     }
-    UsbTrace(message, 1);
+    sLogBytes = 0;
 }
 
-/* Debug menu: trace files on/off while running, remembered with USRDIR/trace_on. */
+static void LogStart(const char* reason) {
+    char line[160];
+    OotPs3TraceReset("log: Ship of Gadeguion " OOT_PS3_APP_VER " (EBOOT built " __DATE__ " " __TIME__ ")");
+    oot_ps3_early_trace(reason);
+    {
+        char stamp[48];
+        UtcStamp(stamp, sizeof(stamp));
+        snprintf(line, sizeof(line), "trace: session started %s UTC; log in USRDIR/logs/latest.txt", stamp);
+        oot_ps3_early_trace(line);
+    }
+    TraceAsyncStart();
+    oot_ps3_early_trace(sTraceAsyncOn ? "trace: asynchronous writer thread active (200 ms)"
+                                      : "trace: asynchronous writer unavailable; writing synchronously");
+}
+
+/* Debug menu: log files on/off while running, remembered with USRDIR/logs/log_off. */
 int oot_ps3_trace_enabled(void) {
     return sTraceEnabled;
 }
 
 void oot_ps3_trace_set_enabled(int on) {
     if (on && !sTraceEnabled) {
-        const int flag = open(OOT_PS3_TRACE_ON_PATH, O_WRONLY | O_CREAT, 0666);
-        if (flag >= 0) (void)close(flag);
+        (void)unlink(OOT_PS3_LOG_OFF);
         sTraceEnabled = 1;
         if (!sTraceAsyncOn) {
-            OotPs3TraceReset("trace: trace files enabled from the debug menu");
-            TraceAsyncStart();
+            LogBootRotate();
+            LogStart("trace: log files enabled from the debug menu");
         }
-        oot_ps3_early_trace("trace: trace files on (debug menu)");
+        oot_ps3_early_trace("trace: log files on (debug menu)");
     } else if (!on && sTraceEnabled) {
-        oot_ps3_early_trace("trace: trace files off (debug menu)");
+        oot_ps3_early_trace("trace: log files off (debug menu)");
         oot_ps3_early_trace_flush_usb();
         sTraceEnabled = 0;
-        (void)unlink(OOT_PS3_TRACE_ON_PATH);
+        {
+            const int flag = open(OOT_PS3_LOG_OFF, O_WRONLY | O_CREAT, 0666);
+            if (flag >= 0) (void)close(flag);
+        }
+        LogSessionEndedCleanly();
     }
 }
 
 int main(int argc, char* argv[]) {
-    {
-        const int flag = open(OOT_PS3_TRACE_ON_PATH, O_RDONLY);
-        sTraceEnabled = flag >= 0;
-        if (flag >= 0) (void)close(flag);
-    }
+    (void)mkdir(OOT_PS3_LOG_DIR, 0777);
+    sTraceEnabled = !PathExists(OOT_PS3_LOG_OFF);
     if (sTraceEnabled) {
-        OotPs3TraceReset("v48 audio-defer probe: native main wrapper entered");
-        oot_ps3_early_trace("trace: persistent HDD handles and USB mirror active (USRDIR/trace_on)");
-        TraceAsyncStart();
-        oot_ps3_early_trace(sTraceAsyncOn ? "trace: asynchronous writer thread active (200 ms)"
-                                          : "trace: asynchronous writer unavailable; writing synchronously");
+        LogBootRotate();
+        LogStart("trace: player log active (USRDIR/logs, plus any USB drive)");
     }
     oot_ps3_early_trace("P200: before early isolated RSX startup");
     if (!oot_ps3_shipwright_video_start()) {
@@ -743,7 +971,9 @@ void oot_ps3_poll_exit(void) {
     if (sPs3ExitRequested) {
         oot_ps3_early_trace("xmb: exit requested; leaving cleanly");
         oot_ps3_audio_shutdown();
+        oot_ps3_early_trace("log: session ended cleanly");
         oot_ps3_early_trace_flush_usb();
+        if (sTraceEnabled) LogSessionEndedCleanly();
         exit(0);
     }
 }

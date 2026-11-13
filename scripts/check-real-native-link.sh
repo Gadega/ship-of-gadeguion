@@ -172,6 +172,7 @@ PY
     echo 'BLOCKED compiling priority-105 midpoint marker'; grep -m2 -E 'fatal error:|error:' "$OUT/logs/ctor-mid105.log"; exit 3; }
 "${cc_run[@]}" -std=gnu11 -O2 -mcpu=cell -Wall -Wextra -Werror \
     "-I$PS3_SDK_ROOT/ppu/include" \
+    "-DOOT_PS3_APP_VER=\"$(grep -m1 '^APP_VER=' "$ROOT/scripts/package-real-native.sh" | cut -d'"' -f2)\"" \
     -c "$ROOT/ps3_platform/source/ps3_early_entry.c" \
     -o "$OUT/objects/ps3_early_entry.o" >"$OUT/logs/early-entry.log" 2>&1 || {
     echo 'BLOCKED compiling PS3 early entry'; grep -m2 -E 'fatal error:|error:' "$OUT/logs/early-entry.log"; exit 3; }

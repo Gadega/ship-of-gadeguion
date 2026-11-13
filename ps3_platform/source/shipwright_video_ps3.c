@@ -16,6 +16,7 @@ static int sReady;
 extern void oot_ps3_early_trace(const char* message);
 void oot_ps3_trace_thread_steps(char* out, unsigned int size); /* ps3_early_entry.c */
 extern void oot_ps3_early_trace_flush_usb(void);
+extern void oot_ps3_log_save_crash(const char* reason);
 static sys_ppu_thread_t sWatchdogThread;
 static int sWatchdogStarted;
 static volatile unsigned int sPlayProbeStarted;
@@ -105,6 +106,7 @@ static void VideoProbeWatchdog(void* argument) {
     oot_ps3_heap_check(8, 1);
     oot_ps3_early_trace("rsx-watchdog: exiting to XMB");
     oot_ps3_early_trace_flush_usb();
+    oot_ps3_log_save_crash("the game froze and was closed by the watchdog");
     _exit(0);
 }
 

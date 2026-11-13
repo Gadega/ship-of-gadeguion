@@ -26,7 +26,7 @@ done
     echo 'STOP: native-link-check/oot-native.elf is missing; run check-real-native-link.sh first.'
     exit 2
 }
-if ! strings "$SOURCE_ELF" | grep -F 'v48 audio-defer probe: native main wrapper entered' >/dev/null ||
+if ! strings "$SOURCE_ELF" | grep -F 'log: Ship of Gadeguion ' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'oot_ps3_v48_audio_probe_premain.txt' >/dev/null; then
     echo 'STOP: native ELF lacks the isolated audio-defer boot identity; refusing stale ELF.'
     exit 2
@@ -50,7 +50,7 @@ if ! strings "$SOURCE_ELF" | grep -F 'fast3d-run: unsupported opcode; presenting
     echo 'STOP: native ELF lacks the bounded partial room frame renderer; refusing stale ELF.'
     exit 2
 fi
-if ! strings "$SOURCE_ELF" | grep -F '/dev_usb000/oot_ps3_v48_audio_probe_boot.txt' >/dev/null ||
+if ! strings "$SOURCE_ELF" | grep -F 'ShipOfGadeguion-log.txt' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'fast3d: translucent title fade composited' >/dev/null; then
     echo 'STOP: native ELF lacks the USB boot trace and translucent title fade; refusing stale ELF.'
     exit 2
@@ -201,7 +201,7 @@ if ! strings "$SOURCE_ELF" | grep -F 'intro-horse: object lookup actor=%d object
     echo 'STOP: native ELF lacks the bounded title horse object bank lookup.'
     exit 2
 fi
-if ! strings "$SOURCE_ELF" | grep -F 'trace: persistent HDD handles and USB mirror active' >/dev/null; then
+if ! strings "$SOURCE_ELF" | grep -F 'trace: player log active (USRDIR/logs, plus any USB drive)' >/dev/null; then
     echo 'STOP: native ELF lacks the reduced trace I/O for RSX frame progression.'
     exit 2
 fi

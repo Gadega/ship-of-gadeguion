@@ -200,7 +200,7 @@ static void PerfLines(int row) {
 
 static void BuildMain(void) {
     static const char* const kLabels[ITEM_COUNT] = {
-        "Performance HUD while playing", "Warp to area...", "Trace files (bug reports)", "Frame rate",
+        "Performance HUD while playing", "Warp to area...", "Log files (bug reports)", "Frame rate",
         "Resolution (after restart)", "GPU vertex path (experimental)", "Render thread (game + draw in parallel)",
         "Triangle fast path (GPU path)",
         "Mark this moment in the trace",
@@ -337,7 +337,7 @@ static void Activate(void) {
         case ITEM_WARP: sPage = 1; SetStatus(""); break;
         case ITEM_TRACE:
             oot_ps3_trace_set_enabled(!oot_ps3_trace_enabled());
-            SetStatus(oot_ps3_trace_enabled() ? "Trace files ON (saved in USRDIR)" : "Trace files OFF");
+            SetStatus(oot_ps3_trace_enabled() ? "Log files ON (USRDIR/logs + USB)" : "Log files OFF");
             break;
         case ITEM_FPS: {
             /* 60 -> auto -> steady 30 -> unlocked -> 20 -> 60 */
