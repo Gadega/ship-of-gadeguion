@@ -777,6 +777,12 @@ static void RunFrame() {
                         GraphPs3Trace(playFrameTrace);
                     }
                 }
+                {
+                    /* Debug-menu warps/age switches wait here for a safe moment; also the
+                     * periodic game-state line in the log (ps3_debug_game.c). */
+                    extern void oot_ps3_debug_game_tick(void);
+                    oot_ps3_debug_game_tick();
+                }
                 GraphPs3Trace("graph: diagnostic real Play frame Graph_Update completed; before RSX draw");
                 {
                     unsigned long long gfxStartUs = oot_ps3_microseconds_now();
@@ -1050,6 +1056,22 @@ static void RunFrame() {
             continue;
         }
         if (runFrameContext.nextOvl && runFrameContext.ovl->init == Play_Init) {
+            {
+                /* The age change of Play_Destroy (Inventory_SwapAgeEquipment) and
+                 * Player_Destroy (gSaveContext.linkAge = linkAgeOnLoad): without it the
+                 * Master Sword / time travel and the debug age switch never changed age. */
+                PlayState* ps3Play = (PlayState*)gGameState;
+                if (gSaveContext.linkAge != ps3Play->linkAgeOnLoad) {
+                    Player* ps3Player = GET_PLAYER(ps3Play);
+                    char ps3Line[96];
+                    Inventory_SwapAgeEquipment();
+                    if (ps3Player != NULL) Player_SetEquipmentData(ps3Play, ps3Player);
+                    snprintf(ps3Line, sizeof(ps3Line), "trace: Link's age changes %d -> %d (equipment swapped)",
+                             (int)gSaveContext.linkAge, (int)ps3Play->linkAgeOnLoad);
+                    oot_ps3_early_trace(ps3Line);
+                    gSaveContext.linkAge = ps3Play->linkAgeOnLoad;
+                }
+            }
             GraphPs3Trace("graph: release Play arena (Play_Destroy skipped on PS3); enter next state");
             GraphPs3ReleaseStateArena(gGameState);
             gGameState = NULL;

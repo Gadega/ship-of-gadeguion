@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
@@ -39,6 +40,7 @@ void oot_ps3_early_trace_flush_usb(void);
 int oot_ps3_trace_enabled(void);
 void oot_ps3_trace_set_enabled(int on);
 void oot_ps3_poll_exit(void);
+void oot_ps3_watchdog_kick(void); /* shipwright_video_ps3.c: a frame was shown */
 unsigned int oot_ps3_pad_menu_buttons(void); /* shipwright_os_ps3.c */
 uint32_t oot_ps3_shipwright_video_width(void);
 uint32_t oot_ps3_shipwright_video_height(void);
@@ -494,6 +496,7 @@ static const uint8_t kWhite[3] = { 235, 235, 240 }, kDim[3] = { 140, 150, 170 },
 
 static void Present(void) {
     const uint32_t w = oot_ps3_shipwright_video_width(), h = oot_ps3_shipwright_video_height();
+    oot_ps3_watchdog_kick(); /* the screen may stay open for hours: not a freeze */
     if (w == 0 || h == 0 || !oot_ps3_rsx_begin(w, h)) {
         usleep(16000);
         return;
@@ -517,33 +520,102 @@ static void Present(void) {
 
 /* ===================================================================== USB search */
 typedef struct {
-    char path[96];
-    char sohPath[96];
+    char path[260];
+    char sohPath[270];
     int usb;
     long long size;
 } Source;
 
-static int FindSource(Source* source) {
-    static const char* const kNames[] = { "oot.o2r", "ShipOfGadeguion/oot.o2r", "oot-mq.o2r",
-                                          "ShipOfGadeguion/oot-mq.o2r" };
+static int IsDirectory(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static int EndsWithO2r(const char* name) {
+    const size_t n = strlen(name);
+    return n > 4 && name[n - 4] == '.' && (name[n - 3] | 0x20) == 'o' && name[n - 2] == '2' && (name[n - 1] | 0x20) == 'r';
+}
+
+static int IsSohArchive(const char* name) {
+    return strlen(name) == 7 && (name[0] | 0x20) == 's' && (name[1] | 0x20) == 'o' && (name[2] | 0x20) == 'h' &&
+           EndsWithO2r(name);
+}
+
+/* Files already rejected (path + size), so a bad file isn't re-read every scan. */
+static char sRejected[8][260];
+static long long sRejectedSize[8];
+static unsigned int sRejectedCount;
+static char sLastError[96];
+
+static int WasRejected(const char* path, long long size) {
+    unsigned int i;
+    for (i = 0; i < sRejectedCount && i < 8; ++i)
+        if (sRejectedSize[i] == size && strcmp(sRejected[i], path) == 0) return 1;
+    return 0;
+}
+
+/* One folder: the first .o2r (any name except soh.o2r, any upper/lower case) that passes
+ * the archive check. Sub-folders are collected into `dirs` for the second pass. */
+static int ScanFolder(const char* folder, int usb, Source* source, ArchiveInfo* info, char (*dirs)[200],
+                      unsigned int* dirCount, unsigned int maxDirs) {
+    s32 dir;
+    sysFSDirent entry;
+    u64 got = 0;
+    int found = 0;
+    if (sysLv2FsOpenDir(folder, &dir) != 0) return 0;
+    while (!found && sysLv2FsReadDir(dir, &entry, &got) == 0 && got != 0) {
+        char path[260];
+        if (entry.d_name[0] == '.' || strlen(entry.d_name) > 120) continue;
+        snprintf(path, sizeof(path), "%.133s/%.120s", folder, entry.d_name);
+        if (IsDirectory(path)) {
+            if (dirs != NULL && *dirCount < maxDirs) snprintf(dirs[(*dirCount)++], 200, "%s", path);
+            continue;
+        }
+        if (!EndsWithO2r(entry.d_name) || IsSohArchive(entry.d_name)) continue;
+        {
+            const long long size = FileSize(path);
+            if (size <= 0 || WasRejected(path, size)) continue;
+            if (strcmp(path, source->path) == 0 && size == source->size && info->ok) {
+                found = 1; /* same file as last scan: already checked */
+                break;
+            }
+            CheckArchive(path, info);
+            Trace("trace: setup found %s (%lld bytes): %s %s", path, size, info->ok ? "ok, version" : "rejected:",
+                  info->ok ? info->version : info->error);
+            if (!info->ok) {
+                const unsigned int slot = sRejectedCount++ % 8U;
+                snprintf(sRejected[slot], sizeof(sRejected[slot]), "%s", path);
+                sRejectedSize[slot] = size;
+                snprintf(sLastError, sizeof(sLastError), "%s", info->error);
+                continue;
+            }
+            snprintf(source->path, sizeof(source->path), "%s", path);
+            snprintf(source->sohPath, sizeof(source->sohPath), "%s/soh.o2r", folder);
+            if (!Exists(source->sohPath)) source->sohPath[0] = '\0';
+            source->size = size;
+            source->usb = usb;
+            found = 1;
+        }
+    }
+    (void)sysLv2FsCloseDir(dir);
+    return found;
+}
+
+/* Every USB drive: its root first, then each folder in the root. Returns 1 when a usable
+ * game archive was found; *drives = number of USB drives connected. */
+static int FindSource(Source* source, ArchiveInfo* info, int* drives) {
     int usb;
-    unsigned int n;
+    *drives = 0;
     for (usb = 0; usb < 8; ++usb) {
         char root[16];
+        static char dirs[32][200];
+        unsigned int dirCount = 0, i;
         snprintf(root, sizeof(root), "/dev_usb%03d", usb);
         if (!Exists(root)) continue;
-        for (n = 0; n < sizeof(kNames) / sizeof(kNames[0]); ++n) {
-            snprintf(source->path, sizeof(source->path), "%s/%s", root, kNames[n]);
-            source->size = FileSize(source->path);
-            if (source->size > 0) {
-                const char* slash = strrchr(source->path, '/');
-                snprintf(source->sohPath, sizeof(source->sohPath), "%.*s/soh.o2r", (int)(slash - source->path),
-                         source->path);
-                if (!Exists(source->sohPath)) source->sohPath[0] = '\0';
-                source->usb = usb;
-                return 1;
-            }
-        }
+        ++*drives;
+        if (ScanFolder(root, usb, source, info, dirs, &dirCount, 32)) return 1;
+        for (i = 0; i < dirCount; ++i)
+            if (ScanFolder(dirs[i], usb, source, info, NULL, NULL, 0)) return 1;
     }
     return 0;
 }
@@ -603,7 +675,7 @@ static int TriangleHeldAtBoot(void) {
 
 void oot_ps3_setup_screen(void) {
     const int installed = FileSize(GAME_O2R) > 0;
-    int state = ST_SEARCH, sel = 0, frame = 0, debugMenu, logs;
+    int state = ST_SEARCH, sel = 0, frame = 0, debugMenu, logs, drives = 0;
     unsigned int prev = 0;
     Source source;
     ArchiveInfo info;
@@ -612,6 +684,10 @@ void oot_ps3_setup_screen(void) {
     char message[96] = "";
     static uint8_t chunk[1024 * 1024];
     if (installed) {
+        ArchiveInfo game;
+        CheckArchive(GAME_O2R, &game);
+        Trace("trace: game file oot.o2r: %s (%u entries)%s%s", game.ok ? game.version : "NOT USABLE", game.entries,
+              game.ok ? "" : " - ", game.ok ? "" : game.error);
         RefreshIconIfReplaced();
         if (!TriangleHeldAtBoot()) return;
     }
@@ -631,17 +707,16 @@ void oot_ps3_setup_screen(void) {
         prev = buttons;
 
         /* ---- work ---- */
-        if ((state == ST_SEARCH || state == ST_FOUND || state == ST_BAD) && frame % 30 == 0) {
-            Source found;
-            memset(&found, 0, sizeof(found));
-            if (!FindSource(&found)) {
-                state = ST_SEARCH;
-            } else if (state == ST_SEARCH || strcmp(found.path, source.path) != 0 || found.size != source.size) {
-                source = found;
-                CheckArchive(source.path, &info);
-                state = info.ok ? ST_FOUND : ST_BAD;
-                Trace("trace: setup found %s (%lld bytes): %s %s", source.path, source.size,
-                      info.ok ? "ok, version" : "rejected:", info.ok ? info.version : info.error);
+        /* Every second: the first usable .o2r on any USB drive is picked automatically. */
+        if ((state == ST_SEARCH || state == ST_FOUND || state == ST_BAD) && frame % 60 == 0) {
+            sLastError[0] = '\0';
+            if (FindSource(&source, &info, &drives)) {
+                if (state != ST_FOUND) sel = 2; /* just found: select the install button */
+                state = ST_FOUND;
+            } else {
+                info.ok = 0;
+                source.path[0] = '\0';
+                state = (drives > 0 && sLastError[0] != '\0') ? ST_BAD : ST_SEARCH;
             }
         }
         if (state == ST_COPY) {
@@ -763,16 +838,20 @@ void oot_ps3_setup_screen(void) {
                 case ST_SEARCH:
                     if (installed) {
                         TextCentered(y, 1, kGreen, "The game file is installed.");
-                        TextCentered(y + 12, 1, kDim, "To replace it, plug in a USB drive with a new oot.o2r.");
-                    } else {
+                        TextCentered(y + 12, 1, kDim, "To replace it, plug in a USB drive with a new .o2r file.");
+                    } else if (drives == 0) {
                         TextCentered(y, 1, kGold, "Plug in a USB drive with your oot.o2r file.");
                         TextCentered(y + 12, 1, kDim, "Ship of Harkinian (PC) makes it from your own ROM.");
-                        TextCentered(y + 24, 1, kDim, "Put it in the root of the drive (FAT32).");
+                        TextCentered(y + 24, 1, kDim, "Any .o2r file name works, in the root or in a folder.");
+                    } else {
+                        TextCentered(y, 1, kGold, "No .o2r file found on the USB drive.");
+                        TextCentered(y + 12, 1, kDim, "Put it in the root of the drive or in a folder.");
+                        TextCentered(y + 24, 1, kDim, "exFAT/NTFS drives can't be read by the PS3: use FAT32.");
                     }
                     break;
                 case ST_FOUND:
-                    snprintf(line, sizeof(line), "Found %.40s on USB drive %d (%.1f MB)",
-                             strchr(source.path + 1, '/') + 1, source.usb, source.size / 1048576.0);
+                    snprintf(line, sizeof(line), "Found %.36s on USB drive %d (%.1f MB)",
+                             source.path + 12, source.usb, source.size / 1048576.0);
                     TextCentered(y, 1, kGreen, line);
                     snprintf(line, sizeof(line), "Game version: %.48s", info.version);
                     TextCentered(y + 12, 1, kWhite, line);
@@ -780,8 +859,8 @@ void oot_ps3_setup_screen(void) {
                         TextCentered(y + 24, 1, kGold, "Only NTSC-U 1.0 has been tested so far.");
                     break;
                 case ST_BAD:
-                    TextCentered(y, 1, kRed, "This file can't be used:");
-                    TextCentered(y + 12, 1, kRed, info.error);
+                    TextCentered(y, 1, kRed, "The .o2r file on the USB drive can't be used:");
+                    TextCentered(y + 12, 1, kRed, sLastError);
                     break;
                 case ST_COPY: {
                     const int barW = SCR_W - 120;
@@ -794,7 +873,7 @@ void oot_ps3_setup_screen(void) {
                     break;
                 }
                 case ST_DONE:
-                    TextCentered(y, 1, kGreen, "Installed! The XMB icon updates when you return to the XMB.");
+                    TextCentered(y, 1, kGreen, "Installed! The XMB icon changes when you return to the XMB.");
                     snprintf(line, sizeof(line), "Game version: %.48s", info.version);
                     TextCentered(y + 12, 1, kWhite, line);
                     break;
@@ -812,18 +891,23 @@ void oot_ps3_setup_screen(void) {
                 labels[0] = opt0;
                 labels[1] = opt1;
                 labels[2] = action;
+                static const char* const kHelp[2] = {
+                    "Performance info, warps, age switch, screenshots.",
+                    "Crash logs saved on the HDD and your USB drive.",
+                };
+                static const int kRowY[3] = { 146, 176, 210 };
+                Text(80, 130, 1, kTitle, "Build options");
+                FillRect(80, 140, TextWidth("Build options", 1), 1, kTitle);
                 for (i = 0; i < 3; ++i) {
-                    const int rowY = 150 + i * 18 + (i == 2 ? 8 : 0);
+                    const int rowY = kRowY[i];
                     const int enabled = i != 2 || state == ST_FOUND || state == ST_DONE || state == ST_FAILED ||
                                         (installed && (state == ST_SEARCH || state == ST_BAD));
                     if (i == sel) FillRect(80, rowY - 4, SCR_W - 160, 16, kSelect);
                     Text(96, rowY, 1, i == sel ? kGold : enabled ? kWhite : kDim, labels[i]);
+                    if (i < 2) Text(112, rowY + 13, 1, kDim, kHelp[i]);
                 }
-                if (sel == 1)
-                    TextCentered(216, 1, kDim, "Logs help fix crashes: share ShipOfGadeguion-*.txt");
-                if (sel == 0) TextCentered(216, 1, kDim, "Performance info, warps and screenshots.");
             }
-            TextCentered(234, 1, kDim, installed ? "X: select    O: start the game    SELECT: quit"
+            TextCentered(238, 1, kDim, installed ? "X: select    O: start the game    SELECT: quit"
                                                  : "X: select    SELECT: quit");
             FillRect(0, SCR_H - 22, SCR_W, 22, kShadow);
             Text(8, SCR_H - 15, 1, kWhite, "Port made by Gadega");

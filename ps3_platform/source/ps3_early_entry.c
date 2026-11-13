@@ -289,6 +289,11 @@ static int UsbFindRoot(char* root, unsigned int size) {
     return 0;
 }
 
+/* First USB drive's root ("/dev_usb000"), for the debug menu's screenshots. */
+int oot_ps3_usb_root(char* out, unsigned int size) {
+    return UsbFindRoot(out, size);
+}
+
 /* Every logs/crash-*.txt not yet on the stick -> <usb>/ShipOfGadeguion-crash-*.txt */
 static void UsbDeliverCrashLogs(const char* root) {
     s32 dir;

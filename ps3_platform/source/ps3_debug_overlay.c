@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <zlib.h>
 
 #include "../../third_party/font8x8/font8x8_basic.h"
 
@@ -76,13 +77,15 @@ void oot_ps3_rsx_set_draw_state(uint32_t uv0Off, uint32_t uv1Off, uint32_t fogOf
                                 uint32_t inputPer, float flags, const float packs[4]);
 int oot_ps3_rsx_triangles(const float* vbo, uint32_t stride, uint32_t triangles, uint32_t texture0_id,
                           uint32_t texture1_id, int alpha, uint32_t inputs, int material);
-const char* oot_ps3_rsx_selftest_summary(void);
+int oot_ps3_usb_root(char* out, unsigned int size); /* ps3_early_entry.c */
 /* ps3_debug_game.c */
 int oot_ps3_debug_game_info(char* line1, char* line2, unsigned int size);
 int oot_ps3_debug_warp_count(void);
 const char* oot_ps3_debug_warp_name(int index);
 int oot_ps3_debug_warp(int index);
 void oot_ps3_debug_mark(int number);
+int oot_ps3_debug_switch_age(void);
+int oot_ps3_debug_link_is_adult(void);
 
 #define PANEL_COLS 64
 #define PANEL_ROWS 32
@@ -178,7 +181,7 @@ static void Rasterize(void) {
 }
 
 /* ---- pages ---- */
-enum { ITEM_HUD, ITEM_WARP, ITEM_TRACE, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_TRIFAST, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
+enum { ITEM_HUD, ITEM_WARP, ITEM_AGE, ITEM_TRACE, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_TRIFAST, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
 
 /* Resolution: native by default, USRDIR/res720 forces 720p (rsx_screen.c, read at boot). */
 static int sRes720 = -1;
@@ -212,8 +215,8 @@ static void PerfLines(int row) {
 
 static void BuildMain(void) {
     static const char* const kLabels[ITEM_COUNT] = {
-        "Performance HUD while playing", "Warp to area...", "Log files (bug reports)", "Frame rate",
-        "Resolution (after restart)", "GPU vertex path (experimental)", "Render thread (game + draw in parallel)",
+        "Performance HUD while playing", "Warp to area...", "Switch Link's age (child / adult)", "Log files (bug reports)", "Frame rate",
+        "Resolution (after restart)", "GPU vertex path", "Render thread (game + draw in parallel)",
         "Triangle fast path (GPU path)",
         "Mark this moment in the trace",
         "Take screenshot", "Close menu",
@@ -234,20 +237,17 @@ static void BuildMain(void) {
                          mode == 4 && oot_ps3_frame_auto_half() ? "[AUTO 30]" : kModes[mode >= 0 && mode < 5 ? mode : 0]);
             } break;
             case ITEM_RES: snprintf(value, sizeof(value), "[%s]", Res720() ? "720p" : "NATIVE"); break;
-            case ITEM_TNL: {
-                static const char* const kTnl[7] = { "[OFF]", "[ON]", "[PROBE]", "[NO CULL]", "[ATTR PROBE]",
-                                                     "[ATTR PROBE F]", "[ON FLOAT]" };
-                const int mode = oot_ps3_tnl_requested();
-                snprintf(value, sizeof(value), "%s", kTnl[mode >= 0 && mode < 7 ? mode : 0]);
-            } break;
+            case ITEM_TNL: snprintf(value, sizeof(value), "[%s]", oot_ps3_tnl_requested() != 0 ? "ON" : "OFF"); break;
+            case ITEM_AGE: snprintf(value, sizeof(value), "[%s]", oot_ps3_debug_link_is_adult() ? "ADULT" : "CHILD"); break;
             case ITEM_THREAD: snprintf(value, sizeof(value), "[%s]", oot_ps3_render_thread_enabled() ? "ON" : "OFF"); break;
             case ITEM_TRIFAST: snprintf(value, sizeof(value), "[%s]", oot_ps3_tri_fast_enabled() ? "ON" : "OFF"); break;
             default: break;
         }
         Line(6 + i, i == sSel ? COL_SELECT : COL_TEXT, "%s %-40s %s", i == sSel ? ">" : " ", kLabels[i], value);
     }
-    if (sSel == ITEM_TNL) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (probes draw white, no depth/cull; attr probe ignores matrices)");
-    Line(6 + ITEM_COUNT + 3, COL_DIM, "%s", oot_ps3_rsx_selftest_summary());
+    if (sSel == ITEM_TNL) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (vertex work on the RSX: faster; OFF = CPU path)");
+    if (sSel == ITEM_AGE) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (reloads the area as the other age)");
+    if (sSel == ITEM_SHOT) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (saved in USRDIR and on the USB drive)");
     if (sSel == ITEM_FPS) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (auto: 60, steady 30 when heavy; unlocked may tear)");
     if (sSel == ITEM_RES) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (native = 1080p on a 1080p TV; restart the game to apply)");
     Line(PANEL_ROWS - 3, COL_WARN, "%s", sStatus);
@@ -281,63 +281,98 @@ static void SetStatus(const char* text) {
     snprintf(sStatus, sizeof(sStatus), "%s", text);
 }
 
+/* PNG writer streaming the frame: one IDAT chunk per filled output buffer, written to
+ * every open file (USRDIR and the USB drive). */
+static void PngWriteAll(const int* fds, int count, const void* data, uint32_t size) {
+    int i;
+    for (i = 0; i < count; ++i)
+        if (fds[i] >= 0) (void)write(fds[i], data, size);
+}
+static void PngChunk(const int* fds, int count, const char* tag, const uint8_t* data, uint32_t size) {
+    uint8_t head[8], tail[4];
+    uLong crc = crc32(0L, (const Bytef*)tag, 4);
+    if (size != 0) crc = crc32(crc, data, size);
+    head[0] = (uint8_t)(size >> 24); head[1] = (uint8_t)(size >> 16); head[2] = (uint8_t)(size >> 8); head[3] = (uint8_t)size;
+    memcpy(head + 4, tag, 4);
+    tail[0] = (uint8_t)(crc >> 24); tail[1] = (uint8_t)(crc >> 16); tail[2] = (uint8_t)(crc >> 8); tail[3] = (uint8_t)crc;
+    PngWriteAll(fds, count, head, 8);
+    if (size != 0) PngWriteAll(fds, count, data, size);
+    PngWriteAll(fds, count, tail, 4);
+}
+
 static void WriteScreenshot(void) {
     uint32_t width = 0, height = 0, y, x;
     const uint32_t* frame = oot_ps3_rsx_capture_frame(&width, &height);
-    char path[96], msg[96];
-    static uint8_t row[1920 * 3];
-    FILE* f = NULL;
+    char path[96], usbPath[128], usbRoot[32], msg[128];
+    static uint8_t row[1 + 1920 * 3];
+    static uint8_t out[256 * 1024];
+    int fds[2] = { -1, -1 };
+    z_stream zs;
     if (frame == NULL || width == 0 || height == 0 || width > 1920) {
         SetStatus("Screenshot failed: no frame");
         return;
     }
-    /* Next free screenshot_NNN.bmp. */
+    /* Next free screenshot_NNN.png. */
     for (; sShotCount < 1000; ++sShotCount) {
         int fd;
-        snprintf(path, sizeof(path), "/dev_hdd0/game/OOTP30048/USRDIR/screenshot_%03d.bmp", sShotCount + 1);
+        snprintf(path, sizeof(path), "/dev_hdd0/game/OOTP30048/USRDIR/screenshot_%03d.png", sShotCount + 1);
         fd = open(path, O_RDONLY);
         if (fd < 0) break;
         close(fd);
     }
     ++sShotCount;
-    f = fopen(path, "wb");
-    if (f == NULL) {
-        SetStatus("Screenshot failed: cannot write USRDIR");
+    fds[0] = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    usbPath[0] = '\0';
+    if (oot_ps3_usb_root(usbRoot, sizeof(usbRoot))) {
+        snprintf(usbPath, sizeof(usbPath), "%s/ShipOfGadeguion-screenshot_%03d.png", usbRoot, sShotCount);
+        fds[1] = open(usbPath, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    }
+    if (fds[0] < 0 && fds[1] < 0) {
+        SetStatus("Screenshot failed: cannot write");
         return;
     }
     {
-        /* 24-bit BMP, bottom-up rows (width * 3 is a multiple of 4 for 1280/1920/720). */
-        const uint32_t rowBytes = (width * 3 + 3) & ~3U;
-        const uint32_t imageBytes = rowBytes * height;
-        uint8_t header[54];
-        memset(header, 0, sizeof(header));
-        header[0] = 'B'; header[1] = 'M';
-#define PUT32(off, v) do { header[off] = (uint8_t)(v); header[off + 1] = (uint8_t)((v) >> 8); \
-        header[off + 2] = (uint8_t)((v) >> 16); header[off + 3] = (uint8_t)((v) >> 24); } while (0)
-        PUT32(2, 54 + imageBytes);
-        PUT32(10, 54);
-        PUT32(14, 40);
-        PUT32(18, width);
-        PUT32(22, height);
-        header[26] = 1;
-        header[28] = 24;
-        PUT32(34, imageBytes);
-#undef PUT32
-        fwrite(header, 1, sizeof(header), f);
-        for (y = height; y-- > 0;) {
+        uint8_t ihdr[13];
+        PngWriteAll(fds, 2, "\x89PNG\r\n\x1a\n", 8);
+        ihdr[0] = (uint8_t)(width >> 24); ihdr[1] = (uint8_t)(width >> 16); ihdr[2] = (uint8_t)(width >> 8); ihdr[3] = (uint8_t)width;
+        ihdr[4] = (uint8_t)(height >> 24); ihdr[5] = (uint8_t)(height >> 16); ihdr[6] = (uint8_t)(height >> 8); ihdr[7] = (uint8_t)height;
+        ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = ihdr[11] = ihdr[12] = 0; /* 8-bit RGB */
+        PngChunk(fds, 2, "IHDR", ihdr, 13);
+    }
+    memset(&zs, 0, sizeof(zs));
+    deflateInit(&zs, 1); /* fast: the game is waiting */
+    zs.next_out = out;
+    zs.avail_out = sizeof(out);
+    for (y = 0; y <= height; ++y) {
+        const int last = y == height;
+        if (!last) {
             const uint32_t* src = frame + (size_t)y * width;
-            memset(row, 0, rowBytes);
+            row[0] = 0;
             for (x = 0; x < width; ++x) {
                 const uint32_t p = src[x]; /* X8R8G8B8 */
-                row[x * 3 + 0] = (uint8_t)p;
-                row[x * 3 + 1] = (uint8_t)(p >> 8);
-                row[x * 3 + 2] = (uint8_t)(p >> 16);
+                row[1 + x * 3 + 0] = (uint8_t)(p >> 16);
+                row[1 + x * 3 + 1] = (uint8_t)(p >> 8);
+                row[1 + x * 3 + 2] = (uint8_t)p;
             }
-            fwrite(row, 1, rowBytes, f);
+            zs.next_in = row;
+            zs.avail_in = 1 + width * 3;
+        }
+        for (;;) {
+            const int result = deflate(&zs, last ? Z_FINISH : Z_NO_FLUSH);
+            if (zs.avail_out == 0 || (last && result == Z_STREAM_END)) {
+                PngChunk(fds, 2, "IDAT", out, (uint32_t)(sizeof(out) - zs.avail_out));
+                zs.next_out = out;
+                zs.avail_out = sizeof(out);
+            }
+            if (last ? result == Z_STREAM_END || result < 0 : zs.avail_in == 0) break;
         }
     }
-    fclose(f);
-    snprintf(msg, sizeof(msg), "Screenshot saved: USRDIR/screenshot_%03d.bmp", sShotCount);
+    deflateEnd(&zs);
+    PngChunk(fds, 2, "IEND", NULL, 0);
+    if (fds[0] >= 0) close(fds[0]);
+    if (fds[1] >= 0) { fsync(fds[1]); close(fds[1]); }
+    if (fds[1] >= 0) snprintf(msg, sizeof(msg), "Screenshot %03d saved (USRDIR + USB drive)", sShotCount);
+    else snprintf(msg, sizeof(msg), "Screenshot saved: USRDIR/screenshot_%03d.png", sShotCount);
     SetStatus(msg);
     oot_ps3_early_trace(msg);
 }
@@ -362,8 +397,16 @@ static void Activate(void) {
             SetStatus("Resolution saved: restart the game to apply");
             break;
         case ITEM_TNL:
-            /* off -> on -> white probe -> no culling -> attr probe -> attr probe (float) -> on (float) */
-            oot_ps3_tnl_set_requested((oot_ps3_tnl_requested() + 1) % 7);
+            /* OFF or ON (mode 6 = float vertex records, the tested GPU path) */
+            oot_ps3_tnl_set_requested(oot_ps3_tnl_requested() != 0 ? 0 : 6);
+            break;
+        case ITEM_AGE:
+            if (oot_ps3_debug_switch_age()) {
+                SetStatus("Switching age...");
+                sOpen = 0;
+            } else {
+                SetStatus("Age switch only works during gameplay");
+            }
             break;
         case ITEM_THREAD: oot_ps3_render_thread_set_enabled(!oot_ps3_render_thread_enabled()); break;
         case ITEM_TRIFAST:

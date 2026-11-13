@@ -2264,6 +2264,17 @@ void func_8006907C(PlayState* play) {
     }
 }
 
+/* PS3 debug-menu warps: the entrance cutscenes of this entrance count as seen. */
+void Cutscene_Ps3MarkEntranceCutscenesSeen(s16 entrance, s32 age) {
+    s16 i;
+    for (i = 0; i < ARRAY_COUNT(sEntranceCutsceneTable); i++) {
+        EntranceCutscene* entry = &sEntranceCutsceneTable[i];
+        if (entry->entrance == entrance && (entry->ageRestriction == 2 || entry->ageRestriction == age) &&
+            entry->flag != EVENTCHKINF_EPONA_OBTAINED)
+            Flags_SetEventChkInf(entry->flag);
+    }
+}
+
 void Cutscene_HandleEntranceTriggers(PlayState* play) {
     EntranceCutscene* entranceCutscene;
     u8 requiredAge;
