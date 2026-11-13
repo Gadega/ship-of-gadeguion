@@ -1067,6 +1067,11 @@ static void RunFrame() {
                  * Player_Destroy (gSaveContext.linkAge = linkAgeOnLoad): without it the
                  * Master Sword / time travel and the debug age switch never changed age. */
                 PlayState* ps3Play = (PlayState*)gGameState;
+                /* GameState_Destroy's sound-effect stop (also skipped with it): sounds of the
+                 * old area must not keep playing, or point at its freed actors. */
+                oot_ps3_audio_lock();
+                func_800C3C20();
+                oot_ps3_audio_unlock();
                 if (gSaveContext.linkAge != ps3Play->linkAgeOnLoad) {
                     Player* ps3Player = GET_PLAYER(ps3Play);
                     char ps3Line[96];

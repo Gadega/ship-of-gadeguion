@@ -83,10 +83,29 @@ void oot_ps3_audio_unlock(void) {
 
 /* Same cadence as SoH: 528 or 544 frames per engine update, averaging
  * 32000 / 60 = 533.33 so the sequencer tempo (60 updates per second) holds. */
+/* Debug menu: SPU or PPU mixer, switched by the audio thread between engine updates. */
+static volatile int sMixerRequest = -1; /* -1 none, 0 PPU, 1 SPU */
+static int sMixerSpu;
+void oot_ps3_audio_request_spu_mixer(int on) {
+    sMixerRequest = on ? 1 : 0;
+}
+int oot_ps3_audio_spu_mixer_on(void) {
+    return sMixerSpu;
+}
+
 static void ProduceMore(void) {
     const uint32_t frames = sSampleDebtThirds > 0 ? 544 : 528;
     unsigned long long t0, spent;
     if (sFifoFrames + frames > FIFO_FRAMES) return; /* no room: don't advance the tempo bookkeeping */
+    if (sMixerRequest >= 0) {
+        const int want = sMixerRequest;
+        sMixerRequest = -1;
+        if (!want || oot_ps3_spu_audio_active()) {
+            oot_ps3_mixer_set_spu(want);
+            sMixerSpu = want;
+            oot_ps3_early_trace(want ? "trace: audio mixer -> SPU (debug menu)" : "trace: audio mixer -> PPU (debug menu)");
+        }
+    }
     sSampleDebtThirds += 1600 - 3 * (int32_t)frames;
     t0 = oot_ps3_microseconds_now();
     sAudioStage = 1;
@@ -128,6 +147,33 @@ void oot_ps3_audio_set_master(float volume) {
     sPs3MasterVolume = volume < 0.0f ? 0.0f : volume > 1.0f ? 1.0f : volume;
 }
 
+/* Glitch detector: a sample-to-sample jump much larger than the recent average is
+ * a click/pop (the output's own steps are smooth at 48 kHz). Logged with a timestamp
+ * (trace lines carry [s.ms]) so it can be matched with what the game was doing. */
+static float sClickPrev[2], sClickAvg[2] = { 0.01f, 0.01f };
+static unsigned int sClicks, sClickLogs;
+static float sClickMax;
+static void Ps3ClickCheck(float l, float r) {
+    const float v[2] = { l, r };
+    int c;
+    for (c = 0; c < 2; ++c) {
+        const float d = v[c] > sClickPrev[c] ? v[c] - sClickPrev[c] : sClickPrev[c] - v[c];
+        if (d > 0.25f && d > 24.0f * sClickAvg[c]) {
+            ++sClicks;
+            if (d > sClickMax) sClickMax = d;
+            if (sClickLogs < 40) {
+                char line[128];
+                ++sClickLogs;
+                snprintf(line, sizeof(line), "graph: Play audio-glitch click ch=%d jump=%.2f avg=%.3f", c, (double)d,
+                         (double)sClickAvg[c]);
+                oot_ps3_early_trace(line);
+            }
+        }
+        sClickAvg[c] += (d - sClickAvg[c]) * (1.0f / 64.0f);
+        sClickPrev[c] = v[c];
+    }
+}
+
 static void FillBlock(float* out) {
     const double step = (double)GAME_RATE / (double)OUT_RATE;
     const double needed = sFifoPos + step * AUDIO_BLOCK_SAMPLES + 3.0;
@@ -154,6 +200,7 @@ static void FillBlock(float* out) {
         f = sFifo + (index - 1) * 2;
         out[i * 2] = ClampUnit(Hermite(f[0], f[2], f[4], f[6], t) * (sPs3MasterVolume / 32768.0f));
         out[i * 2 + 1] = ClampUnit(Hermite(f[1], f[3], f[5], f[7], t) * (sPs3MasterVolume / 32768.0f));
+        Ps3ClickCheck(out[i * 2], out[i * 2 + 1]);
         sFifoPos += step;
     }
     /* Drop consumed frames but keep one before the read position as history. */
@@ -173,6 +220,9 @@ static void AudioThread(void* arg) {
     int writeValid = 0;
     unsigned long long lastReportUs = 0;
     unsigned long long lastWakeUs = 0;
+    unsigned long long lastFillUs = 0;
+    uint32_t queuedAfterFill = 0;
+    unsigned int lateLogs = 0;
     (void)arg;
 
     oot_ps3_early_trace("audio-out: thread running");
@@ -196,6 +246,28 @@ static void AudioThread(void* arg) {
             lastWakeUs = wake;
             sAudioLastWakeUs = wake;
         }
+        /* The ring index is modulo 16: if the hardware played through everything we had
+         * queued (thread woke too late), `ahead` wraps to a large value and the old test
+         * (ahead == 0) never saw it; the hardware then replays stale blocks. Compare
+         * the time since the last fill with the audio that was queued then. */
+        if (lastFillUs != 0) {
+            const unsigned long long elapsed = oot_ps3_microseconds_now() - lastFillUs;
+            const unsigned long long queuedUs = (unsigned long long)queuedAfterFill * 256ULL * 1000000ULL / OUT_RATE;
+            if (elapsed + 2000ULL >= queuedUs) {
+                sUnderruns++;
+                if (lateLogs < 40) {
+                    char line[128];
+                    ++lateLogs;
+                    snprintf(line, sizeof(line), "graph: Play audio-glitch late wake: %llu us since the last fill, %llu us were queued",
+                             elapsed, queuedUs);
+                    oot_ps3_early_trace(line);
+                }
+                if (elapsed >= queuedUs) { /* played past our data: start again right after the hardware */
+                    writeBlock = (readBlock + 1) % blocks;
+                    ahead = 1;
+                }
+            }
+        }
         if (ahead < sMinAhead) sMinAhead = ahead;
         if (ahead == 0) {
             /* The hardware reached our write position: we fell behind. */
@@ -208,15 +280,19 @@ static void AudioThread(void* arg) {
             writeBlock = (writeBlock + 1) % blocks;
             ahead++;
         }
+        lastFillUs = oot_ps3_microseconds_now();
+        queuedAfterFill = ahead;
         {
             const unsigned long long now = oot_ps3_microseconds_now();
             if (now - lastReportUs >= 10000000ULL) { /* every 10 s */
-                char line[224];
+                char line[320];
                 snprintf(line, sizeof(line),
                          "graph: Play audio-out updates=%u synth=%llu us maxSynth=%llu us underruns=%u "
-                         "minAhead=%u/%u blocks maxWakeGap=%llu us zeroFill=%u (last 10 s)",
+                         "minAhead=%u/%u blocks maxWakeGap=%llu us zeroFill=%u clicks=%u (max %.2f) mixer=%s (last 10 s)",
                          sProduceCalls, sProduceUs, sProduceMaxUs, sUnderruns, sMinAhead, (unsigned)TARGET_AHEAD,
-                         sWakeGapMaxUs, sZeroFills);
+                         sWakeGapMaxUs, sZeroFills, sClicks, (double)sClickMax, sMixerSpu ? "SPU" : "PPU");
+                sClicks = 0;
+                sClickMax = 0.0f;
                 if (lastReportUs != 0) oot_ps3_early_trace(line);
                 if (oot_ps3_spu_audio_active()) {
                     unsigned int spuRuns;
@@ -287,7 +363,10 @@ int oot_ps3_audio_start(void) {
         return 0;
     }
     sRunning = 1;
-    if (oot_ps3_spu_audio_init()) oot_ps3_mixer_set_spu(1);
+    if (oot_ps3_spu_audio_init()) {
+        oot_ps3_mixer_set_spu(1);
+        sMixerSpu = 1;
+    }
     if (sysThreadCreate(&sThread, AudioThread, NULL, 900, 256 * 1024, THREAD_JOINABLE, "oot-audio") != 0) {
         oot_ps3_early_trace("audio-out: thread creation failed");
         sRunning = 0;

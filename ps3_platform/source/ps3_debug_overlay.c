@@ -110,6 +110,8 @@ int oot_ps3_debug_item_count(void);
 const char* oot_ps3_debug_item_name(int index);
 int oot_ps3_debug_give_item(int index);
 int oot_ps3_debug_reset_to_title(void);
+void oot_ps3_audio_request_spu_mixer(int on); /* ps3_audio.c */
+int oot_ps3_audio_spu_mixer_on(void);
 
 #define PANEL_COLS 64
 #define PANEL_ROWS 32
@@ -209,7 +211,7 @@ static void Rasterize(void) {
 }
 
 /* ---- pages ---- */
-enum { ITEM_HUD, ITEM_WARP, ITEM_CUTSCENE, ITEM_ITEMS, ITEM_AGE, ITEM_RESET, ITEM_TRACE, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_TRIFAST, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
+enum { ITEM_HUD, ITEM_WARP, ITEM_CUTSCENE, ITEM_ITEMS, ITEM_AGE, ITEM_RESET, ITEM_TRACE, ITEM_MIXER, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_TRIFAST, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
 
 /* Resolution: native by default, USRDIR/res720 forces 720p (rsx_screen.c, read at boot). */
 static int sRes720 = -1;
@@ -244,7 +246,8 @@ static void PerfLines(int row) {
 static void BuildMain(void) {
     static const char* const kLabels[ITEM_COUNT] = {
         "Performance HUD while playing", "Warp to area...", "Play a cutscene...", "Give items...",
-        "Switch Link's age (child / adult)", "Reset game (title screen)", "Log files (crash reports)", "Frame rate",
+        "Switch Link's age (child / adult)", "Reset game (title screen)", "Log files (crash reports)",
+        "Audio mixer", "Frame rate",
         "Resolution (after restart)", "GPU vertex path", "Render thread (game + draw in parallel)",
         "Triangle fast path (GPU path)",
         "Mark this moment in the trace",
@@ -268,6 +271,7 @@ static void BuildMain(void) {
             case ITEM_RES: snprintf(value, sizeof(value), "[%s]", Res720() ? "720p" : "NATIVE"); break;
             case ITEM_TNL: snprintf(value, sizeof(value), "[%s]", oot_ps3_tnl_requested() != 0 ? "ON" : "OFF"); break;
             case ITEM_AGE: snprintf(value, sizeof(value), "[%s]", oot_ps3_debug_link_is_adult() ? "ADULT" : "CHILD"); break;
+            case ITEM_MIXER: snprintf(value, sizeof(value), "[%s]", oot_ps3_audio_spu_mixer_on() ? "SPU" : "PPU"); break;
             case ITEM_THREAD: snprintf(value, sizeof(value), "[%s]", oot_ps3_render_thread_enabled() ? "ON" : "OFF"); break;
             case ITEM_TRIFAST: snprintf(value, sizeof(value), "[%s]", oot_ps3_tri_fast_enabled() ? "ON" : "OFF"); break;
             default: break;
@@ -437,6 +441,10 @@ static void Activate(void) {
         case ITEM_ITEMS:
             sPage = PAGE_ITEMS;
             SetStatus(oot_ps3_debug_item_count() > 0 ? "" : "Items can only be given during gameplay");
+            break;
+        case ITEM_MIXER:
+            oot_ps3_audio_request_spu_mixer(!oot_ps3_audio_spu_mixer_on());
+            SetStatus("Audio mixer switched (takes effect at once)");
             break;
         case ITEM_RESET:
             if (oot_ps3_debug_reset_to_title()) {

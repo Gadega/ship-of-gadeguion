@@ -982,8 +982,9 @@ void Gfx_RegisterBlendedTexture(const char*, u8*, u8*) {}
 void Gfx_UnregisterBlendedTexture(const char*) {}
 void Gfx_TextureCacheDelete(const uint8_t*) {}
 
+extern "C" void oot_ps3_pad_rumble(int on); // shipwright_os_ps3.c (DualShock 3 motor)
 void OTRControllerCallback(uint8_t rumble) {
-    (void)rumble; // Native pad polling/rumble lives in shipwright_os_ps3.c.
+    oot_ps3_pad_rumble(rumble != 0); // every game input read; the pad code only acts on changes
 }
 void ProcessSaveStateRequests(void) {}
 void SetAudioChannels(AudioChannelsSetting channels) { (void)channels; }

@@ -450,6 +450,32 @@ int oot_ps3_pad_select_held(void) {
     return 0;
 }
 
+/* Rumble Pak -> DualShock 3 large motor on the first connected controller (Stone of
+ * Agony, hits, the fishing rod...). Game menu "Rumble" off -> never. Only changes
+ * are sent (the game calls this on every input read). */
+int oot_ps3_game_menu_rumble_enabled(void); /* ps3_game_menu.c */
+void oot_ps3_pad_rumble(int on) {
+    static int sLastOn = -1, sLastPort = -1;
+    int port = -1, i;
+    if (!sPadInitialized) return;
+    if (!oot_ps3_game_menu_rumble_enabled()) on = 0;
+    for (i = 0; i < MAXCONTROLLERS; ++i)
+        if (sPs3HavePad[i]) {
+            port = i;
+            break;
+        }
+    if (port < 0 || (on == sLastOn && port == sLastPort)) return;
+    {
+        padActParam act;
+        memset(&act, 0, sizeof(act));
+        act.small_motor = 0;
+        act.large_motor = on ? 200 : 0;
+        (void)ioPadSetActDirect((u32)port, &act);
+    }
+    sLastOn = on;
+    sLastPort = port;
+}
+
 /* Setup screen (ps3_setup_screen.c): buttons held on any controller.
  * 1 up, 2 down, 4 cross, 8 circle, 0x10 triangle, 0x20 start. */
 unsigned int oot_ps3_pad_menu_buttons(void) {

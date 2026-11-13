@@ -37,12 +37,17 @@ void oot_ps3_request_exit(void);                   /* ps3_early_entry.c */
 int oot_ps3_debug_menu_allowed(void);              /* ps3_debug_overlay.c */
 void oot_ps3_debug_menu_set_allowed(int on);
 
-enum { ITEM_RESUME, ITEM_MASTER, ITEM_MUSIC, ITEM_SFX, ITEM_DEBUG, ITEM_RESET, ITEM_QUIT, ITEM_COUNT };
+enum { ITEM_RESUME, ITEM_MASTER, ITEM_MUSIC, ITEM_SFX, ITEM_RUMBLE, ITEM_DEBUG, ITEM_RESET, ITEM_QUIT, ITEM_COUNT };
 
 static int sOpen, sSel, sConfirm, sSwallow;
 static unsigned int sPrev, sHeld;
 static int sVolume[3] = { 100, 100, 100 }; /* master, music, sfx (percent) */
 static int sLoaded, sApplied;
+static int sRumble = 1;
+
+int oot_ps3_game_menu_rumble_enabled(void) {
+    return sRumble;
+}
 
 static void LoadSettings(void) {
     char text[256];
@@ -56,6 +61,8 @@ static void LoadSettings(void) {
     text[n] = '\0';
     {
         static const char* const kKeys[3] = { "master=", "music=", "sfx=" };
+        const char* rumble = strstr(text, "rumble=");
+        if (rumble != NULL) sRumble = atoi(rumble + 7) != 0;
         int i;
         for (i = 0; i < 3; ++i) {
             const char* at = strstr(text, kKeys[i]);
@@ -72,7 +79,8 @@ static void SaveSettings(void) {
     const int fd = open(SETTINGS_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     int n;
     if (fd < 0) return;
-    n = snprintf(text, sizeof(text), "master=%d\nmusic=%d\nsfx=%d\n", sVolume[0], sVolume[1], sVolume[2]);
+    n = snprintf(text, sizeof(text), "master=%d\nmusic=%d\nsfx=%d\nrumble=%d\n", sVolume[0], sVolume[1], sVolume[2],
+                 sRumble);
     (void)write(fd, text, (size_t)n);
     close(fd);
 }
@@ -133,6 +141,10 @@ int oot_ps3_game_menu_input(unsigned int buttons) {
             switch (sSel) {
                 case ITEM_RESUME: close = 1; break;
                 case ITEM_DEBUG: oot_ps3_debug_menu_set_allowed(!oot_ps3_debug_menu_allowed()); break;
+                case ITEM_RUMBLE:
+                    sRumble = !sRumble;
+                    SaveSettings();
+                    break;
                 case ITEM_RESET:
                     if (!sConfirm) {
                         sConfirm = 1;
@@ -160,7 +172,7 @@ int oot_ps3_game_menu_input(unsigned int buttons) {
 /* Drawn on top of every frame (render thread), before the debug menu. */
 void oot_ps3_game_menu_frame(unsigned int screenWidth, unsigned int screenHeight) {
     static const char* const kLabels[ITEM_COUNT] = {
-        "Resume", "Master volume", "Music volume", "Sound effects volume", "Debug menu (R3)", "Reset game",
+        "Resume", "Master volume", "Music volume", "Sound effects volume", "Rumble", "Debug menu (R3)", "Reset game",
         "Quit to XMB",
     };
     const float panelW = 680.0f, left = 56.0f;
@@ -189,6 +201,8 @@ void oot_ps3_game_menu_frame(unsigned int screenWidth, unsigned int screenHeight
             ps3ui_rect(barX, y + 16, barW * v / 100.0f, 8, selected ? 0x96D2FFFF : 0x6E9CC8FF);
             snprintf(value, sizeof(value), "%d", v);
             ps3ui_text_right(panelW - 34, y + 2, 26, color, 0, value);
+        } else if (i == ITEM_RUMBLE) {
+            ps3ui_text_right(panelW - 34, y + 2, 26, sRumble ? 0x8CF0A0FFU : 0xB4C3D8FFU, 0, sRumble ? "On" : "Off");
         } else if (i == ITEM_DEBUG) {
             ps3ui_text_right(panelW - 34, y + 2, 26, oot_ps3_debug_menu_allowed() ? 0x8CF0A0FF : 0xB4C3D8FF, 0,
                              oot_ps3_debug_menu_allowed() ? "On" : "Off");

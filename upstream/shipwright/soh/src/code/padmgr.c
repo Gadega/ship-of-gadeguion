@@ -321,6 +321,23 @@ void PadMgr_ProcessInputs(PadMgr* padMgr) {
 // PS3: threads don't run and osContStartQuery never posts its reply, so
 // PadMgr_HandleRetraceMsg would block. The graph loop calls this once per frame.
 void PadMgr_PS3Poll(PadMgr* padMgr) {
+    /* The rumble manager runs from the retrace callback (PadMgr_HandleRetraceMsg, which
+     * PS3 doesn't use): once per N64 retrace = R_UPDATE_RATE times per game frame, so
+     * rumble lengths match. PadMgr_ProcessInputs then passes rumbleEnable[0] to
+     * OTRControllerCallback (DualShock 3 motor). */
+    if (padMgr->retraceCallback != NULL) {
+        s32 i;
+        const s32 n = R_UPDATE_RATE > 0 ? R_UPDATE_RATE : 1;
+        for (i = 0; i < n; i++) padMgr->retraceCallback(padMgr, padMgr->retraceCallbackValue);
+    }
+    if (padMgr->rumbleOffFrames > 0) {
+        --padMgr->rumbleOffFrames;
+        padMgr->rumbleEnable[0] = 0;
+    } else if (padMgr->rumbleOnFrames == 0) {
+        padMgr->rumbleEnable[0] = 0;
+    } else {
+        --padMgr->rumbleOnFrames;
+    }
     osContGetReadData(padMgr->pads);
     PadMgr_ProcessInputs(padMgr);
 }
