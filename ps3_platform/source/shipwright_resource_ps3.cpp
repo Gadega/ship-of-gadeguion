@@ -877,8 +877,8 @@ bool Decode(Resource* resource, const std::vector<unsigned char>& file) {
         const uint32_t tableCount = body.ReadU32();
         // 0 normal, 1 flex, 2 curve (curve skeletons use curve limbs, type 4)
         if (skeletonType > 2 || limbType < 1 || limbType > 4 || (skeletonType == 2) != (limbType == 4) ||
-            limbCount == 0 || limbCount > 64 || tableCount == 0 ||
-            tableCount > 64 || dListCount > 64) return false;
+            limbCount == 0 || limbCount > 255 || tableCount == 0 || /* u8 in the game's struct */
+            tableCount > 255 || dListCount > 255) return false;   /* Gohma has 85 limbs (64 hung its fight) */
         std::vector<std::string> paths;
         paths.reserve(tableCount);
         for (uint32_t i = 0; i < tableCount; ++i) {
@@ -1375,7 +1375,7 @@ static bool SkipSceneMesh(Reader& reader) {
         if (!reader.Can(1)) return false;
         polygons = reader.U8();
     }
-    if (polygons > 64) return false;
+    if (polygons > 255) return false;
     for (uint32_t i = 0; i < polygons; ++i) {
         if (type == 0) {
             if (!reader.Skip(1) || !reader.SceneString(nullptr) || !reader.SceneString(nullptr)) return false;
@@ -1385,7 +1385,7 @@ static bool SkipSceneMesh(Reader& reader) {
             if (!reader.Skip(1) || !reader.SceneString(nullptr) || !reader.SceneString(nullptr) || !reader.Can(4))
                 return false;
             const uint32_t images = reader.ReadU32();
-            if (images > 64) return false;
+            if (images > 255) return false;
             for (uint32_t image = 0; image < images; ++image) {
                 if (!reader.Skip(3) || !reader.SceneString(nullptr) || !reader.Skip(18)) return false;
             }
@@ -1418,7 +1418,7 @@ static bool ReadRoomMesh(Reader& reader, Ps3RoomMesh* room) {
     if (type != 0 && type != 2) return false;
     if (!reader.Can(1)) return false;
     const unsigned count = reader.U8();
-    if (count == 0 || count > 64) return false;
+    if (count == 0 || count > 255) return false;
     room->header = {};
     room->header.base.type = type;
     if (type == 0) {
@@ -2269,7 +2269,7 @@ bool ReadMesh(Reader& r, Ps3Mesh* mesh) {
         p.format = r.U8();
         if (!r.SceneString(nullptr) || !r.SceneString(nullptr)) return false;
         const uint32_t count = r.ReadU32();
-        if (count > 64) return false;
+        if (count > 255) return false;
         for (uint32_t i = 0; i < count; ++i) {
             BgImage image = {};
             image.unk_00 = r.U16();
@@ -2313,7 +2313,7 @@ bool ReadMesh(Reader& r, Ps3Mesh* mesh) {
     }
     if (type != 0 && type != 2) return false;
     const unsigned count = r.U8();
-    if (count > 64) return false;
+    if (count > 255) return false;
     mesh->normal.resize(type == 0 ? count : 0);
     mesh->sorted.resize(type == 2 ? count : 0);
     for (unsigned i = 0; i < count; ++i) {
@@ -2436,7 +2436,7 @@ bool ReadSceneCommand(Reader& r, Ps3SceneCmd* cmd, Ps3Scene* scene, unsigned dep
         }
         case 0x0D: {
             const uint32_t n = r.ReadU32();
-            if (n > 64) return false;
+            if (n > 255) return false;
             for (uint32_t i = 0; i < n; ++i) {
                 std::string name;
                 if (!r.SceneString(&name)) return false;

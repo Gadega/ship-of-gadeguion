@@ -152,7 +152,7 @@ void SkelAnime_DrawFlexLimbLod(PlayState* play, s32 limbIndex, void** skeleton, 
     Vec3s rot;
 
 #ifdef __PS3__
-    if (limbIndex < 0 || limbIndex >= 64 || ++sPs3FlexLimbVisits > 96) {
+    if (limbIndex < 0 || limbIndex >= 255 || ++sPs3FlexLimbVisits > 512) {
         SKEL_PS3_TRACE("skel-draw: invalid limb index or cyclic traversal; stopped safely");
         return;
     }
@@ -1169,7 +1169,7 @@ void SkelAnime_InitLink(PlayState* play, SkelAnime* skelAnime, FlexSkeletonHeade
     FlexSkeletonHeader* skeletonHeader = SEGMENTED_TO_VIRTUAL(skeletonHeaderSeg);
     s32 headerJointCount = skeletonHeader->sh.limbCount;
 #ifdef __PS3__
-    if (headerJointCount <= 0 || headerJointCount > 64) {
+    if (headerJointCount <= 0 || headerJointCount > 255) {
         SKEL_PS3_TRACE("skel-init-link: invalid skeleton joint count; exiting safely");
         _exit(0);
     }
