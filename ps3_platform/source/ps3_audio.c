@@ -83,6 +83,19 @@ void oot_ps3_audio_unlock(void) {
 
 /* Same cadence as SoH: 528 or 544 frames per engine update, averaging
  * 32000 / 60 = 533.33 so the sequencer tempo (60 updates per second) holds. */
+/* Save states: nothing in the audio engine may run while its memory is copied. The
+ * engine lock stops new updates; an SPU mix runs outside the lock, so wait for it. */
+void oot_ps3_audio_quiesce_begin(void) {
+    unsigned int spins = 0;
+    if (!sStarted) return;
+    oot_ps3_audio_lock();
+    while (sAudioStage == 3) oot_ps3_lock_backoff(&spins);
+}
+void oot_ps3_audio_quiesce_end(void) {
+    if (!sStarted) return;
+    oot_ps3_audio_unlock();
+}
+
 /* Debug menu: SPU or PPU mixer, switched by the audio thread between engine updates. */
 static volatile int sMixerRequest = -1; /* -1 none, 0 PPU, 1 SPU */
 static int sMixerSpu;

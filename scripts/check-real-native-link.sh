@@ -384,6 +384,10 @@ fi
     -o "$OUT/objects/game-en-mag.o" >"$OUT/logs/game-en-mag.log" 2>&1 || {
     echo 'BLOCKED compiling title logo actor'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/game-en-mag.log"; exit 3; }
 "${cc_run[@]}" "${game_main_flags[@]}" \
+    -c "$ROOT/ps3_platform/source/ps3_savestate.c" \
+    -o "$OUT/objects/game-ps3-savestate.o" >"$OUT/logs/game-ps3-savestate.log" 2>&1 || {
+    echo 'BLOCKED compiling save states'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/game-ps3-savestate.log"; exit 3; }
+"${cc_run[@]}" "${game_main_flags[@]}" \
     -c "$ROOT/ps3_platform/source/ps3_debug_game.c" \
     -o "$OUT/objects/game-ps3-debug.o" >"$OUT/logs/game-ps3-debug.log" 2>&1 || {
     echo 'BLOCKED compiling debug menu game helpers'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/game-ps3-debug.log"; exit 3; }
@@ -607,7 +611,7 @@ final_objects+=(
     "$OUT/objects/game-bgcheck.o"
     "$OUT/objects/game-en-mag.o"
     "$OUT/objects/game-kanfont.o"
-    "$OUT/objects/game-ps3-debug.o"
+    "$OUT/objects/game-ps3-debug.o" "$OUT/objects/game-ps3-savestate.o"
     "$OUT/objects/game-effect-ss.o"
     "$OUT/objects/game-eff-kirakira.o"
     "$OUT/objects/game-fc-z-file-choose.o"

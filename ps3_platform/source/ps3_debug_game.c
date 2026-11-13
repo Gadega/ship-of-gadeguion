@@ -400,6 +400,8 @@ void oot_ps3_debug_game_tick(void) {
     static s16 sLastScene = -1;
     static unsigned int sUpdates;
     PlayState* play = Ps3DebugPlay();
+    extern void oot_ps3_savestate_tick(PlayState* play); /* ps3_savestate.c */
+    oot_ps3_savestate_tick(play);
     if (play == NULL) {
         if (sPs3Request != PS3_REQ_NONE && gGameState != NULL && gGameState->running) Ps3ApplyOutsidePlay(NULL);
         return;

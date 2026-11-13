@@ -36,14 +36,18 @@ int oot_ps3_debug_reset_to_title(void);            /* ps3_debug_game.c */
 void oot_ps3_request_exit(void);                   /* ps3_early_entry.c */
 int oot_ps3_debug_menu_allowed(void);              /* ps3_debug_overlay.c */
 void oot_ps3_debug_menu_set_allowed(int on);
+void oot_ps3_savestate_request(int load, int slot);     /* ps3_savestate.c */
+int oot_ps3_savestate_slot_used(int slot);
+const char* oot_ps3_savestate_status(unsigned int* serial);
 
-enum { ITEM_RESUME, ITEM_MASTER, ITEM_MUSIC, ITEM_SFX, ITEM_RUMBLE, ITEM_DEBUG, ITEM_RESET, ITEM_QUIT, ITEM_COUNT };
+enum { ITEM_RESUME, ITEM_SAVESTATE, ITEM_LOADSTATE, ITEM_MASTER, ITEM_MUSIC, ITEM_SFX, ITEM_RUMBLE, ITEM_DEBUG, ITEM_RESET, ITEM_QUIT, ITEM_COUNT };
 
 static int sOpen, sSel, sConfirm, sSwallow;
 static unsigned int sPrev, sHeld;
 static int sVolume[3] = { 100, 100, 100 }; /* master, music, sfx (percent) */
 static int sLoaded, sApplied;
 static int sRumble = 1;
+static int sStateSlot; /* 0..2 */
 
 int oot_ps3_game_menu_rumble_enabled(void) {
     return sRumble;
@@ -129,6 +133,8 @@ int oot_ps3_game_menu_input(unsigned int buttons) {
         int close = 0;
         if (act & BTN_UP) { sSel = (sSel + ITEM_COUNT - 1) % ITEM_COUNT; sConfirm = 0; }
         if (act & BTN_DOWN) { sSel = (sSel + 1) % ITEM_COUNT; sConfirm = 0; }
+        if ((sSel == ITEM_SAVESTATE || sSel == ITEM_LOADSTATE) && (act & (BTN_LEFT | BTN_RIGHT)))
+            sStateSlot = (sStateSlot + ((act & BTN_RIGHT) ? 1 : 2)) % 3;
         if (sSel >= ITEM_MASTER && sSel <= ITEM_SFX && (act & (BTN_LEFT | BTN_RIGHT))) {
             int* v = &sVolume[sSel - ITEM_MASTER];
             *v += (act & BTN_RIGHT) ? 5 : -5;
@@ -140,6 +146,11 @@ int oot_ps3_game_menu_input(unsigned int buttons) {
         if (pressed & BTN_CROSS) {
             switch (sSel) {
                 case ITEM_RESUME: close = 1; break;
+                case ITEM_SAVESTATE:
+                case ITEM_LOADSTATE:
+                    oot_ps3_savestate_request(sSel == ITEM_LOADSTATE, sStateSlot);
+                    close = 1;
+                    break;
                 case ITEM_DEBUG: oot_ps3_debug_menu_set_allowed(!oot_ps3_debug_menu_allowed()); break;
                 case ITEM_RUMBLE:
                     sRumble = !sRumble;
@@ -172,29 +183,51 @@ int oot_ps3_game_menu_input(unsigned int buttons) {
 /* Drawn on top of every frame (render thread), before the debug menu. */
 void oot_ps3_game_menu_frame(unsigned int screenWidth, unsigned int screenHeight) {
     static const char* const kLabels[ITEM_COUNT] = {
-        "Resume", "Master volume", "Music volume", "Sound effects volume", "Rumble", "Debug menu (R3)", "Reset game",
+        "Resume", "Save state", "Load state", "Master volume", "Music volume", "Sound effects volume", "Rumble", "Debug menu (R3)", "Reset game",
         "Quit to XMB",
     };
     const float panelW = 680.0f, left = 56.0f;
     float y;
     int i;
+    {
+        /* Save-state result: shown for ~2.5 s at the top left, menu open or not. */
+        static unsigned int sSeenSerial, sToastFrames;
+        unsigned int serial = 0;
+        const char* status = oot_ps3_savestate_status(&serial);
+        if (serial != sSeenSerial) {
+            sSeenSerial = serial;
+            sToastFrames = 150;
+        }
+        if (sToastFrames > 0 && !sOpen && ps3ui_begin(screenWidth, screenHeight)) {
+            const float w = ps3ui_text_width(status, 30, 0) + 48;
+            --sToastFrames;
+            ps3ui_rect(40, 40, w, 56, 0x0B1630E0);
+            ps3ui_rect(40, 40, 5, 56, 0x96D2FFFF);
+            ps3ui_text(64, 52, 30, 0xFFFFFFFF, 0, status);
+            ps3ui_end();
+        }
+    }
     if (!sOpen || !ps3ui_begin(screenWidth, screenHeight)) return;
     ps3ui_rect(0, 0, ps3ui_width(), 1080, 0x00000060); /* dim the game a little */
     ps3ui_gradient(0, 0, panelW, 1080, 0x0B1630F0, 0x102448F0, 24);
     ps3ui_rect(panelW, 0, 3, 1080, 0x5FA8E8FF);
     ps3ui_text(left, 70, 52, 0x96D2FFFF, 1, "Ship of Gadeguion");
     ps3ui_text(left, 136, 26, 0xB4C3D8FF, 0, "Menu");
-    y = 220;
+    y = 200;
     for (i = 0; i < ITEM_COUNT; ++i) {
         const int selected = i == sSel;
         const uint32_t color = selected ? 0xFFFFFFFF : 0xC8D2E0FF;
         char value[32] = "";
         if (selected) {
-            ps3ui_rect(left - 24, y - 10, panelW - left + 8, 58, 0x2E5C9AC0);
-            ps3ui_rect(left - 24, y - 10, 6, 58, 0x96D2FFFF);
+            ps3ui_rect(left - 24, y - 9, panelW - left + 8, 54, 0x2E5C9AC0);
+            ps3ui_rect(left - 24, y - 9, 6, 54, 0x96D2FFFF);
         }
         ps3ui_text(left, y, 32, color, selected, kLabels[i]);
-        if (i >= ITEM_MASTER && i <= ITEM_SFX) {
+        if (i == ITEM_SAVESTATE || i == ITEM_LOADSTATE) {
+            snprintf(value, sizeof(value), "< Slot %d >", sStateSlot + 1);
+            if (i == ITEM_LOADSTATE && !oot_ps3_savestate_slot_used(sStateSlot)) snprintf(value, sizeof(value), "< Slot %d: empty >", sStateSlot + 1);
+            ps3ui_text_right(panelW - 34, y + 2, 26, selected ? 0xFFFFFFFFU : 0xB4C3D8FFU, 0, value);
+        } else if (i >= ITEM_MASTER && i <= ITEM_SFX) {
             const int v = sVolume[i - ITEM_MASTER];
             const float barX = panelW - 230, barW = 150;
             ps3ui_rect(barX, y + 16, barW, 8, 0x2A3A58FF);
@@ -209,14 +242,16 @@ void oot_ps3_game_menu_frame(unsigned int screenWidth, unsigned int screenHeight
         } else if ((i == ITEM_RESET || i == ITEM_QUIT) && selected && sConfirm) {
             ps3ui_text_right(panelW - 34, y + 2, 26, 0xFFD25AFF, 0, "Press X again");
         }
-        y += 74;
-        if (i == ITEM_RESUME || i == ITEM_SFX || i == ITEM_DEBUG) {
+        y += 64;
+        if (i == ITEM_LOADSTATE || i == ITEM_SFX || i == ITEM_DEBUG) {
             ps3ui_rect(left, y - 12, panelW - left - 40, 1, 0x3A4C70FF);
             y += 14;
         }
     }
     if (sSel == ITEM_RESET) ps3ui_text(left, y + 10, 24, 0x9AAAC4FF, 0, "Back to the title screen (unsaved progress is lost).");
     if (sSel == ITEM_DEBUG) ps3ui_text(left, y + 10, 24, 0x9AAAC4FF, 0, "Warps, cutscenes, items, performance info.");
+    if (sSel == ITEM_SAVESTATE || sSel == ITEM_LOADSTATE)
+        ps3ui_text(left, y + 10, 24, 0x9AAAC4FF, 0, "3 slots; kept until you quit the game.");
     ps3ui_text(left, 1080 - 104, 24, 0x9AAAC4FF, 0, "X  select     Left/Right  adjust     O  close");
     ps3ui_text(left, 1080 - 64, 22, 0x7888A4FF, 0, "Port made by Gadega");
     ps3ui_text_right(panelW - 34, 1080 - 64, 22, 0x7888A4FF, 0, "v" OOT_PS3_PORT_VERSION);

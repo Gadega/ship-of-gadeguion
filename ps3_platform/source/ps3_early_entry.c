@@ -289,6 +289,16 @@ static int UsbFindRoot(char* root, unsigned int size) {
     return 0;
 }
 
+/* Large blocks outside the malloc heap (save states, ~9 MB each): LV2 memory in 1 MB
+ * pages. Never freed (kept for the session). NULL when the system has no room. */
+void* oot_ps3_big_alloc(unsigned int bytes) {
+    sys_mem_addr_t address = 0;
+    const unsigned int size = (bytes + 0xFFFFFU) & ~0xFFFFFU;
+    if (sysMemoryAllocate(size, SYS_MEMORY_PAGE_SIZE_1M, &address) != 0) return NULL;
+    memset((void*)(uintptr_t)address, 0, size);
+    return (void*)(uintptr_t)address;
+}
+
 /* First USB drive's root ("/dev_usb000"), for the debug menu's screenshots. */
 int oot_ps3_usb_root(char* out, unsigned int size) {
     return UsbFindRoot(out, size);
