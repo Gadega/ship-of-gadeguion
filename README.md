@@ -15,37 +15,37 @@ HarbourMasters (Ship of Harkinian) or the decompilation team.
 
 ## What works
 
-- The whole game boot flow: title screen and demo, file select, saving and loading
-- Playing the game: tested from the start of a new file through Kokiri Forest
-- Music and sound effects (mixed on an SPU)
-- 60 fps with frame interpolation in most scenes (heavy scenes drop lower)
+- The whole game: title screen and demo, file select, saving and loading, the full adventure
+- Music and sound effects (mixed on an SPU), with day/night music, nature ambience and weather
+- 60 fps with frame interpolation (vertex work on the RSX, rendering and game logic on separate threads)
 - 4:3 and 16:9 TVs, including CRTs at 480i/480p (follows the XMB *TV Type* setting)
 - Saves stored as regular PS3 save data (they show up in the XMB's Saved Data Utility)
-- The pause menu, including the 3D Link on the equipment screen
+- Save states (3 slots), rumble on the DualShock 3, volume controls, an in-game menu (SELECT)
+- An optional debug menu (warps, cutscene player, items, age switch, performance info, screenshots)
 
 ## What you need
 
 - A PS3 running **HEN** (or CFW) that can install PKG files
 - Your own OoT ROM, **NTSC-U 1.0** (other versions are untested and may not work)
 - **[Ship of Harkinian](https://github.com/HarbourMasters/Shipwright/releases) 9.2.x** on a PC,
-  to turn the ROM into `oot.o2r`
-- A Windows PC to run the packager, or a Mac/Linux PC with Python 3
+  to turn the ROM into `oot.o2r` (only once)
+- A USB stick formatted as **FAT32** (the PS3 can't read exFAT or NTFS)
 
 ## Installing
 
 1. **Make `oot.o2r`.** Run Ship of Harkinian 9.2.x on your PC once and give it your ROM. It
    creates `oot.o2r` next to `soh.exe`. (Use `oot.o2r`, not `soh.o2r`.)
-2. **Build the PKG.** Download `ShipOfGadeguion-Packager-<version>.exe` from the
-   [Releases](../../releases) page, open it, pick your `oot.o2r` and click *Build PKG*.
-   It checks your file, then writes an installable PKG on your PC. The XMB icon and name are made
-   from your own game data.
-   **Mac or Linux:** download `ShipOfGadeguion-Packager-<version>-Python.zip` instead, unzip it and
-   run `python3 oot_ps3_packager.py` (needs Python 3; instructions inside).
-3. **Install it** on the PS3 with HEN's Package Manager (*Install Package Files*), like any other PKG.
-4. Start **Ship of Gadeguion** from the Game column.
+2. **Copy it to a USB stick.** Any file name ending in `.o2r` works, in the root of the stick or
+   in a folder.
+3. **Install the PKG.** Download `Ship of Gadeguion v<version>.pkg` from the [Releases](../../releases)
+   page and install it with HEN's Package Manager (*Install Package Files*).
+4. **Start Ship of Gadeguion** with the USB stick plugged in. The setup screen finds your file,
+   checks it and copies it to the PS3 (press X to install). The XMB icon then turns into the
+   game's title logo, drawn from your own game data.
 
-To update to a newer version, build a new PKG with the new packager and install it over the old
-one. Your saves are kept.
+**Updating:** install the new PKG over the old one. Your game file, settings and saves are kept,
+so the setup screen doesn't come back. (Hold **Triangle** while the game starts to open it again,
+for example to replace the game file.)
 
 ## Controls
 
@@ -64,32 +64,31 @@ one. Your saves are kept.
 | C-Left | Right stick left |
 | D-pad | D-pad |
 
-**SELECT quits the game** and returns to the XMB (so does *PS button → Quit Game*).
+**SELECT** opens the Ship of Gadeguion menu: save states, volumes, rumble, the debug menu switch,
+reset to the title screen and *Quit to XMB*. **R3** opens the debug menu once it's switched on.
 
 ## Known issues
 
 - Only the NTSC-U 1.0 ROM has been tested.
-- Frame rate drops in busy areas; the renderer still does most of its work on the Cell's main core.
-- Some environment effects are recreated by hand rather than by the original code, so weather and
-  lighting can differ from Ship of Harkinian in places.
-- Small audio crackles are possible.
-- Ship of Harkinian's menus and enhancements (the PC "Ship" menu, randomizer, texture packs,
-  custom models) are not available.
-- Much of the game beyond the opening areas hasn't been played on this port yet. Bug reports are
-  welcome.
+- A subtle audio stutter can still be heard at times.
+- Frame rate can dip in some heavy views at 1080p.
+- Ship of Harkinian's enhancements (its PC menu options, randomizer, texture packs, custom
+  models) are not available yet, and mod support is still to come.
+- Save states are kept only until you quit the game.
+- Much of the game hasn't been played through on this port yet. Bug reports are welcome.
 
 ## Reporting bugs
 
-Please open an [issue](../../issues) with what happened, where in the game, and a photo or
-screenshot if you can. A trace file helps a lot:
+The game keeps a log by default. If it crashes or freezes, it saves a crash log, and if a USB
+stick is plugged in it also writes it there:
 
-1. Using FTP (for example FileZilla), create an empty file named `trace_on` in
-   `/dev_hdd0/game/OOTP30048/USRDIR/`.
-2. Play until the problem happens. If the game freezes, wait about 20 seconds: it records where it
-   stopped and returns to the XMB.
-3. Attach `/dev_hdd0/game/OOTP30048/USRDIR/audio_probe_boot_trace.txt` to the issue.
+- `ShipOfGadeguion-log.txt`: the current session
+- `ShipOfGadeguion-crash-<date>.txt`: one file per crash (also created after a hard freeze, the
+  next time you start the game)
 
-Delete `trace_on` afterwards; writing the trace slows the game down a little.
+Open an [issue](../../issues) with what happened and where, and attach the crash file (and a
+screenshot if you can: the debug menu saves them to the USB stick too). On the PS3 the logs are in
+`/dev_hdd0/game/OOTP30048/USRDIR/logs/`. Logs can be switched off in the debug menu.
 
 ## Building from source
 
@@ -111,9 +110,9 @@ bash scripts/package-real-native.sh        # EBOOT.BIN + a test PKG (no game dat
 ```
 
 Each script prints `OK` on success and writes logs under its own `*-check/` folder. The
-EBOOT ends up in `build-real-native-pkg/pkg/USRDIR/EBOOT.BIN` and is also copied into
-`tools/packager/payload/`, so the packager script uses it. To build the Windows packager
-`.exe`, run `tools/packager/build_exe.bat` on Windows (it uses PyInstaller).
+EBOOT ends up in `build-real-native-pkg/pkg/USRDIR/EBOOT.BIN`, and the installable PKG (no game
+data) is `oot_ps3_probe_v48.pkg`. Set `OOT_PS3_DEBUG_MENU=0` for release builds (the debug
+menu is then off until the player switches it on in the SELECT menu).
 
 ## How it works (short version)
 
@@ -122,7 +121,9 @@ EBOOT ends up in `build-real-native-pkg/pkg/USRDIR/EBOOT.BIN` and is also copied
 - `ps3_platform/`: the PS3 layer: RSX renderer backend for libultraship's Fast3D, resource
   loader for `.o2r` archives (big-endian conversion of every resource type), audio output and
   the SPU mixer, PS3 save data, input, threads and timers.
-- `tools/packager/`: the PKG builder that combines the port with the user's own `oot.o2r`.
+- `ps3_platform/source/ps3_setup_screen.c`: the first-boot setup that installs the player's
+  `oot.o2r` from a USB stick and draws the XMB icon from it.
+- `tools/packager/`: the old PC packager (up to v1.1.0; no longer needed).
 
 ## Credits
 
@@ -130,12 +131,15 @@ EBOOT ends up in `build-real-native-pkg/pkg/USRDIR/EBOOT.BIN` and is also copied
 - [libultraship](https://github.com/Kenix3/libultraship) and [Torch](https://github.com/HarbourMasters/Torch)
 - The [OoT decompilation](https://github.com/zeldaret/oot) team
 - [PSL1GHT](https://github.com/ps3dev/PSL1GHT) and the [ps3dev](https://github.com/ps3dev/ps3dev) toolchain
-- [stb_image](https://github.com/nothings/stb) by Sean Barrett
+- [stb_image and stb_truetype](https://github.com/nothings/stb) by Sean Barrett
+- [DejaVu fonts](https://dejavu-fonts.github.io/) (menu text)
+- [font8x8](https://github.com/dhepper/font8x8) by Daniel Hepper (debug menu text)
 - PS3 port by **Gadega**
 
 ## License
 
 The PS3 port's own code is released under the GNU General Public License v3 (see `COPYING`).
 Bundled third-party code keeps its own license (libultraship and Torch: MIT; stb: public domain/MIT;
+DejaVu fonts: Bitstream Vera license, see `third_party/dejavu/LICENSE`;
 Ship of Harkinian and the decompilation: see their projects). The original game is © Nintendo;
 no game assets are included.
