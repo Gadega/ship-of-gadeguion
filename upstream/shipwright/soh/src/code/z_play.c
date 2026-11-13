@@ -367,6 +367,7 @@ u8 CheckBridgeRewardCount() {
 static s32 sPs3SceneEnvPending = 0;
 static u32 sPs3PlayInitCount = 0; // Play states reuse the same address
 static void Play_Ps3ApplySceneLighting(PlayState* play);
+static void Play_Ps3SceneStartResets(PlayState* play);
 // Play_Update profiler: microseconds per section, reported every 64 updates.
 extern unsigned long long oot_ps3_microseconds_now(void);
 extern unsigned long long gPs3ActorUpdateUs[ACTOR_ID_MAX];
@@ -864,9 +865,9 @@ void Play_Init(GameState* thisx) {
     // nextEntranceIndex was not initialized, so the previous value was carried over during soft resets.
     gPlayState->nextEntranceIndex = gSaveContext.entranceIndex;
 #ifdef __PS3__
-    // Environment_Init's defaults belong to scene setup, before the first
-    // cutscene command runs (frame 0 may turn on a black screen fill).
-    Play_Ps3ApplySceneLighting(play);
+    // Environment_Init ran in the scene loader (Play_InitEnvironment). What remains here
+    // are PS3 resets of state outside the environment, before the first cutscene command.
+    Play_Ps3SceneStartResets(play);
 #endif
     PLAY_PS3_TRACE("play-init: completed");
 }
@@ -883,28 +884,41 @@ static void Play_Ps3ApplyTimeSettings(PlayState* play) {
     unsigned char hour = 0xFF, minute = 0xFF, increment = 0xFF;
     char ps3Line[128];
 
-    if (!oot_ps3_room_time_settings(&hour, &minute, &increment) &&
-        PLAY_PS3_TITLE_STUB(play)) {
-        hour = 4, minute = 0, increment = 5; /* intro layer values */
-        oot_ps3_early_trace("graph: Play no room time settings; using intro default 4:00 speed 5");
+    if (!oot_ps3_room_time_settings(&hour, &minute, &increment)) {
+        return; /* the room has no time command: Environment_Init's values stay */
     }
+    /* Scene_CommandTimeSettings (soh/z_scene_otr.cpp), unchanged. */
     if ((hour != 0xFF) && (minute != 0xFF)) {
         gSaveContext.skyboxTime = gSaveContext.dayTime =
             (u16)(((hour + (minute / 60.0f)) * 60.0f) / ((f32)(24 * 60) / 0x10000));
     }
     play->envCtx.timeIncrement = (increment != 0xFF) ? increment : 0;
-    gTimeSpeed = play->envCtx.timeIncrement;
+    if (gSaveContext.sunsSongState == SUNSSONG_INACTIVE) {
+        gTimeSpeed = play->envCtx.timeIncrement;
+    }
     play->envCtx.sunPos.x = -(Math_SinS(gSaveContext.dayTime - 0x8000) * 120.0f) * 25.0f;
     play->envCtx.sunPos.y = (Math_CosS(gSaveContext.dayTime - 0x8000) * 120.0f) * 25.0f;
     play->envCtx.sunPos.z = (Math_CosS(gSaveContext.dayTime - 0x8000) * 20.0f) * 25.0f;
-    gSaveContext.nightFlag = (gSaveContext.dayTime > 0xC000 || gSaveContext.dayTime < 0x4555) ? 1 : 0;
+    if (((play->envCtx.timeIncrement == 0) && (gSaveContext.cutsceneIndex < 0xFFF0)) ||
+        (gSaveContext.entranceIndex == ENTR_LAKE_HYLIA_WARP_PAD)) {
+        gSaveContext.skyboxTime = gSaveContext.dayTime;
+        if ((gSaveContext.skyboxTime >= 0x2AAC) && (gSaveContext.skyboxTime < 0x4555)) {
+            gSaveContext.skyboxTime = 0x3556;
+        } else if ((gSaveContext.skyboxTime >= 0x4555) && (gSaveContext.skyboxTime < 0x5556)) {
+            gSaveContext.skyboxTime = 0x5556;
+        } else if ((gSaveContext.skyboxTime >= 0xAAAB) && (gSaveContext.skyboxTime < 0xB556)) {
+            gSaveContext.skyboxTime = 0xB556;
+        } else if ((gSaveContext.skyboxTime >= 0xC001) && (gSaveContext.skyboxTime < 0xCAAC)) {
+            gSaveContext.skyboxTime = 0xCAAC;
+        }
+    }
     snprintf(ps3Line, sizeof(ps3Line), "graph: Play time settings hour=%u minute=%u speed=%u dayTime=%04x",
              (unsigned)hour, (unsigned)minute, (unsigned)gTimeSpeed, (unsigned)gSaveContext.dayTime);
     oot_ps3_early_trace(ps3Line);
 }
 
-// The clock part of Environment_Update (which does not run on PS3).
-static void Play_Ps3UpdateTime(PlayState* play) {
+// The clock part of Environment_Update (replaced by the real Environment_Update).
+__attribute__((unused)) static void Play_Ps3UpdateTime(PlayState* play) {
     static u8 sPs3LastSky1 = 0xFF;
     static u8 sPs3LastSky2 = 0xFF;
 
@@ -951,7 +965,22 @@ static void Play_Ps3UpdateTime(PlayState* play) {
     }
 }
 
-static void Play_Ps3ApplySceneLighting(PlayState* play) {
+/* Scene start: what Environment_Init doesn't cover. Statics and cutscene state that
+ * leak from the previous area because Play_Destroy doesn't run on PS3, and the room
+ * time settings (room command 0x10, applied after Environment_Init as in SoH). */
+static void Play_Ps3SceneStartResets(PlayState* play) {
+    Environment_Ps3ResetLightning();
+    Camera_Ps3ResetStatics();
+    for (s32 ps3Cue = 0; ps3Cue < ARRAY_COUNT(play->csCtx.npcActions); ps3Cue++) {
+        play->csCtx.npcActions[ps3Cue] = NULL;
+    }
+    play->roomCtx.unk_74[0] = play->roomCtx.unk_74[1] = 0;
+    Play_Ps3ApplyTimeSettings(play);
+    oot_ps3_early_trace("graph: Play scene start: real Environment_Init/Update active");
+}
+
+/* The old stand-in for Environment_Init/Update (kept for reference, unused). */
+__attribute__((unused)) static void Play_Ps3ApplySceneLighting(PlayState* play) {
     EnvLightSettings* list = play->envCtx.lightSettingsList;
     EnvLightSettings* ls;
     u16 time = ((void)0, gSaveContext.dayTime);
@@ -1822,9 +1851,8 @@ skip:
 #ifdef __PS3__
     // V48 has only decoded the player spawn and room reference. Keep the
     // first frame bounded until scene environment commands are installed.
-    PLAY_PS3_TRACE("play-update: PS3 defers Environment_Update until scene commands load");
-    Play_Ps3UpdateTime(play);
-    Play_Ps3ApplySceneLighting(play);
+    Environment_Update(play, &play->envCtx, &play->lightCtx, &play->pauseCtx, &play->msgCtx, &play->gameOverCtx,
+                       play->state.gfxCtx);
     Play_Ps3SpawnTitleLogo(play);
     // The title intro's exit (cutscene destination 104) now goes on to the next
     // title demo scene like the original game instead of replaying this intro.

@@ -3018,6 +3018,8 @@ static SequenceData* Ps3AudioSeqForName(const char* path) {
 // ---- end PS3 audio converters ----
 
 // OTRPlay_SpawnScene + OTRPlay_InitScene for every scene except the title intro.
+extern "C" void Play_InitEnvironment(PlayState* play, s16 skyboxId); // z_play.c
+
 extern "C" int oot_ps3_spawn_scene(PlayState* play, s32 sceneId, s32 spawn) {
     SceneTableEntry* entry = &gSceneTable[sceneId];
     entry->unk_13 = 0;
@@ -3052,9 +3054,9 @@ extern "C" int oot_ps3_spawn_scene(PlayState* play, s32 sceneId, s32 spawn) {
     sPs3RoomTimeValid = false;
     play->envCtx.unk_BF = 0xFF; // Environment_Init's "no light override"; cutscenes may set it
     ExecuteSceneCommands(play, scene);
-    // Play_InitEnvironment: Skybox_Init here; the PS3 environment helper in
-    // z_play.c stands in for Environment_Init on the first Play_Update.
-    Skybox_Init(&play->state, &play->skyboxCtx, play->skyboxId);
+    // As SoH's OTRPlay_SpawnScene: Skybox_Init + Environment_Init (2026-11-13; the PS3
+    // stand-in helpers in z_play.c are gone).
+    Play_InitEnvironment(play, play->skyboxId);
     D_8015FCC8 = 1; // Environment_Init: cutscenes may control the camera
     func_80096FE8(play, &play->roomCtx); // allocates room buffers and requests the first room
     char line[160];

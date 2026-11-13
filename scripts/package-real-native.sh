@@ -211,7 +211,7 @@ if ! strings "$SOURCE_ELF" | grep -F 'trace: compact title-frame mode active aft
     exit 2
 fi
 if ! strings "$SOURCE_ELF" | grep -F 'play-update: entered' >/dev/null ||
-   ! strings "$SOURCE_ELF" | grep -F 'play-update: PS3 defers Environment_Update until scene commands load' >/dev/null ||
+   ! strings "$SOURCE_ELF" | grep -F 'graph: Play scene start: real Environment_Init/Update active' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'play-update: before cutscene update 64558' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'cutscene-update: PS3 skips developer debug shortcuts' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'cutscene-start: before Flags_UnsetEnv' >/dev/null ||
