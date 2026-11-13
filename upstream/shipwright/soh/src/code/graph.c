@@ -983,6 +983,12 @@ static void RunFrame() {
             Graph_ProcessGfxCommands(runFrameContext.gfxCtx.workBuffer);
             GraphPs3Trace("graph: after Graph_ProcessGfxCommands");
 #ifdef __PS3__
+            {
+                /* debug-menu warps / cutscenes / reset from the N64 logo, title or file select */
+                extern void oot_ps3_debug_game_tick(void);
+                oot_ps3_debug_game_tick();
+                ps3DiagnosticRunningProbe = GameState_IsRunning(gGameState);
+            }
             if (runFrameContext.ovl->init == Opening_Init) {
                 GraphPs3Trace("graph: diagnostic Opening frame completed; resuming handoff");
             } else if (runFrameContext.ovl->init == FileChoose_Init) {

@@ -23,6 +23,7 @@ extern "C" void oot_ps3_early_trace(const char*);
 extern "C" void oot_ps3_rsx_texture_sampler(uint32_t id, int linear, int wrapS, int wrapT);
 extern "C" int oot_ps3_rsx_copy_fb(int fb);
 extern "C" void oot_ps3_debug_overlay_frame(unsigned int screenWidth, unsigned int screenHeight);
+extern "C" void oot_ps3_game_menu_frame(unsigned int screenWidth, unsigned int screenHeight);
 extern "C" int oot_ps3_rsx_set_target(int fb, uint32_t width, uint32_t height);
 extern "C" void oot_ps3_rsx_set_depth(int test, int write);
 extern "C" void oot_ps3_rsx_set_decal(int decal);
@@ -448,6 +449,7 @@ class Ps3Renderer final : public GfxRenderingAPI {
             snprintf(status, sizeof(status), "fast3d-rsx: upstream triangles=%u submitted=%u",
                      submitted_, valid_);
             oot_ps3_early_trace(status);
+            oot_ps3_game_menu_frame(displayWidth_, displayHeight_);
             oot_ps3_debug_overlay_frame(displayWidth_, displayHeight_);
             oot_ps3_rsx_end();
             oot_ps3_shipwright_video_present_fast3d();

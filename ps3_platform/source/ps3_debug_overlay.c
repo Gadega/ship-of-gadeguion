@@ -29,14 +29,30 @@
 
 /* Players turn the menu on in the setup screen (USRDIR/debug_menu_on); test builds
  * (OOT_PS3_DEBUG_MENU=1) always have it. */
+void oot_ps3_early_trace(const char* message);
+#define DEBUG_MENU_FLAG "/dev_hdd0/game/OOTP30048/USRDIR/debug_menu_on"
+static int sAllowed = -1;
 static int MenuAllowed(void) {
-    static int allowed = -1;
-    if (allowed < 0) {
-        const int fd = open("/dev_hdd0/game/OOTP30048/USRDIR/debug_menu_on", O_RDONLY);
-        allowed = OOT_PS3_DEBUG_MENU || fd >= 0;
+    if (sAllowed < 0) {
+        const int fd = open(DEBUG_MENU_FLAG, O_RDONLY);
+        sAllowed = OOT_PS3_DEBUG_MENU || fd >= 0;
         if (fd >= 0) close(fd);
     }
-    return allowed;
+    return sAllowed;
+}
+/* Game menu (SELECT) switch: remembered with USRDIR/debug_menu_on. */
+int oot_ps3_debug_menu_allowed(void) {
+    return MenuAllowed();
+}
+void oot_ps3_debug_menu_set_allowed(int on) {
+    if (on) {
+        const int fd = open(DEBUG_MENU_FLAG, O_WRONLY | O_CREAT, 0666);
+        if (fd >= 0) close(fd);
+    } else {
+        unlink(DEBUG_MENU_FLAG);
+    }
+    sAllowed = on ? 1 : 0;
+    oot_ps3_early_trace(on ? "trace: debug menu enabled (game menu)" : "trace: debug menu disabled (game menu)");
 }
 
 /* Button mask passed by the pad code (shipwright_os_ps3.c). */
@@ -86,6 +102,14 @@ int oot_ps3_debug_warp(int index);
 void oot_ps3_debug_mark(int number);
 int oot_ps3_debug_switch_age(void);
 int oot_ps3_debug_link_is_adult(void);
+int oot_ps3_debug_cutscene_count(void);
+const char* oot_ps3_debug_cutscene_name(int index);
+int oot_ps3_debug_cutscene_age(int index); /* 0 adult, 1 child */
+int oot_ps3_debug_play_cutscene(int index, int age);
+int oot_ps3_debug_item_count(void);
+const char* oot_ps3_debug_item_name(int index);
+int oot_ps3_debug_give_item(int index);
+int oot_ps3_debug_reset_to_title(void);
 
 #define PANEL_COLS 64
 #define PANEL_ROWS 32
@@ -106,7 +130,11 @@ static uint8_t sDrawnColor[PANEL_ROWS][PANEL_COLS];
 static uint8_t sPixels[PANEL_W * PANEL_H * 4];
 static int sUploaded;
 
-static int sOpen, sHud, sPage, sSel, sWarpSel, sWarpTop;
+static int sOpen, sHud, sPage, sSel, sSwallow;
+/* list pages: 1 warp, 2 cutscenes, 3 items */
+enum { PAGE_MAIN, PAGE_WARP, PAGE_CUTSCENE, PAGE_ITEMS, PAGE_COUNT };
+static int sListSel[PAGE_COUNT], sListTop[PAGE_COUNT];
+static int sCsAge = -1; /* age chosen for the selected cutscene (-1 = its own) */
 static unsigned int sPrevButtons, sHeldTicks;
 static int sMarkCount, sShotCount, sShotPending;
 static char sStatus[PANEL_COLS + 1];
@@ -181,7 +209,7 @@ static void Rasterize(void) {
 }
 
 /* ---- pages ---- */
-enum { ITEM_HUD, ITEM_WARP, ITEM_AGE, ITEM_TRACE, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_TRIFAST, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
+enum { ITEM_HUD, ITEM_WARP, ITEM_CUTSCENE, ITEM_ITEMS, ITEM_AGE, ITEM_RESET, ITEM_TRACE, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_TRIFAST, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
 
 /* Resolution: native by default, USRDIR/res720 forces 720p (rsx_screen.c, read at boot). */
 static int sRes720 = -1;
@@ -215,7 +243,8 @@ static void PerfLines(int row) {
 
 static void BuildMain(void) {
     static const char* const kLabels[ITEM_COUNT] = {
-        "Performance HUD while playing", "Warp to area...", "Switch Link's age (child / adult)", "Log files (bug reports)", "Frame rate",
+        "Performance HUD while playing", "Warp to area...", "Play a cutscene...", "Give items...",
+        "Switch Link's age (child / adult)", "Reset game (title screen)", "Log files (crash reports)", "Frame rate",
         "Resolution (after restart)", "GPU vertex path", "Render thread (game + draw in parallel)",
         "Triangle fast path (GPU path)",
         "Mark this moment in the trace",
@@ -254,21 +283,43 @@ static void BuildMain(void) {
     Line(PANEL_ROWS - 1, COL_DIM, "D-pad: move   X: select   O: back   R3: close");
 }
 
-static void BuildWarp(void) {
-    const int count = oot_ps3_debug_warp_count();
+static int ListCount(int page) {
+    return page == PAGE_WARP ? oot_ps3_debug_warp_count()
+         : page == PAGE_CUTSCENE ? oot_ps3_debug_cutscene_count()
+         : page == PAGE_ITEMS ? oot_ps3_debug_item_count() : 0;
+}
+static const char* ListName(int page, int index) {
+    return page == PAGE_WARP ? oot_ps3_debug_warp_name(index)
+         : page == PAGE_CUTSCENE ? oot_ps3_debug_cutscene_name(index) : oot_ps3_debug_item_name(index);
+}
+
+static void BuildList(int page) {
+    static const char* const kTitles[PAGE_COUNT] = { "", "WARP TO AREA", "PLAY A CUTSCENE", "GIVE ITEMS" };
+    static const char* const kHelp[PAGE_COUNT] = {
+        "", "D-pad: move  L1/R1: page  X: warp  O: back",
+        "D-pad: move  L1/R1: page  Left/Right: age  X: play  O: back",
+        "D-pad: move  L1/R1: page  X: give  O: back",
+    };
+    const int count = ListCount(page);
     const int visible = PANEL_ROWS - 6;
-    int i;
+    int i, sel = sListSel[page];
     Clear();
-    Line(0, COL_TITLE, "WARP TO AREA  (%d/%d)                         R3: close", sWarpSel + 1, count);
-    if (sWarpSel < sWarpTop) sWarpTop = sWarpSel;
-    if (sWarpSel >= sWarpTop + visible) sWarpTop = sWarpSel - visible + 1;
-    for (i = 0; i < visible && sWarpTop + i < count; ++i) {
-        const int index = sWarpTop + i;
-        Line(2 + i, index == sWarpSel ? COL_SELECT : COL_TEXT, "%s %3d %s", index == sWarpSel ? ">" : " ", index + 1,
-             oot_ps3_debug_warp_name(index));
+    Line(0, COL_TITLE, "%s  (%d/%d)", kTitles[page], sel + 1, count);
+    if (sel < sListTop[page]) sListTop[page] = sel;
+    if (sel >= sListTop[page] + visible) sListTop[page] = sel - visible + 1;
+    for (i = 0; i < visible && sListTop[page] + i < count; ++i) {
+        const int index = sListTop[page] + i;
+        if (page == PAGE_CUTSCENE) {
+            const int age = index == sel && sCsAge >= 0 ? sCsAge : oot_ps3_debug_cutscene_age(index);
+            Line(2 + i, index == sel ? COL_SELECT : COL_TEXT, "%s %3d %-44.44s %s", index == sel ? ">" : " ", index + 1,
+                 ListName(page, index), age == 0 ? "adult" : "child");
+        } else {
+            Line(2 + i, index == sel ? COL_SELECT : COL_TEXT, "%s %3d %s", index == sel ? ">" : " ", index + 1,
+                 ListName(page, index));
+        }
     }
     Line(PANEL_ROWS - 3, COL_WARN, "%s", sStatus);
-    Line(PANEL_ROWS - 1, COL_DIM, "D-pad: move  L1/R1: page  X: warp  O: back");
+    Line(PANEL_ROWS - 1, COL_DIM, "%s", kHelp[page]);
 }
 
 static void BuildHud(void) {
@@ -381,7 +432,18 @@ static void Activate(void) {
     char msg[80];
     switch (sSel) {
         case ITEM_HUD: sHud = !sHud; break;
-        case ITEM_WARP: sPage = 1; SetStatus(""); break;
+        case ITEM_WARP: sPage = PAGE_WARP; SetStatus(""); break;
+        case ITEM_CUTSCENE: sPage = PAGE_CUTSCENE; sCsAge = -1; SetStatus(""); break;
+        case ITEM_ITEMS:
+            sPage = PAGE_ITEMS;
+            SetStatus(oot_ps3_debug_item_count() > 0 ? "" : "Items can only be given during gameplay");
+            break;
+        case ITEM_RESET:
+            if (oot_ps3_debug_reset_to_title()) {
+                SetStatus("Resetting...");
+                sOpen = 0;
+            }
+            break;
         case ITEM_TRACE:
             oot_ps3_trace_set_enabled(!oot_ps3_trace_enabled());
             SetStatus(oot_ps3_trace_enabled() ? "Log files ON (USRDIR/logs + USB)" : "Log files OFF");
@@ -405,7 +467,7 @@ static void Activate(void) {
                 SetStatus("Switching age...");
                 sOpen = 0;
             } else {
-                SetStatus("Age switch only works during gameplay");
+                SetStatus("Age switch only works during gameplay (load a file first)");
             }
             break;
         case ITEM_THREAD: oot_ps3_render_thread_set_enabled(!oot_ps3_render_thread_enabled()); break;
@@ -448,29 +510,61 @@ int oot_ps3_debug_input(unsigned int buttons) {
         sOpen = !sOpen;
         sPage = 0;
         SetStatus("");
+        if (!sOpen) sSwallow = 1;
         return 1; /* swallow the R3 press itself */
     }
-    if (!sOpen) return 0;
+    if (!sOpen) {
+        /* After the menu closes (e.g. X on a warp) the game must not see the buttons
+         * still held: X would press "start"/A in the game. */
+        if (sSwallow) {
+            if (buttons == 0) sSwallow = 0;
+            return 1;
+        }
+        return 0;
+    }
     {
         const unsigned int act = pressed | repeat;
         if (sPage == 0) {
             if (act & DBG_BTN_UP) sSel = (sSel + ITEM_COUNT - 1) % ITEM_COUNT;
             if (act & DBG_BTN_DOWN) sSel = (sSel + 1) % ITEM_COUNT;
-            if (pressed & DBG_BTN_CROSS) Activate();
-            if (pressed & DBG_BTN_CIRCLE) sOpen = 0;
+            if (pressed & DBG_BTN_CROSS) {
+                Activate();
+                if (!sOpen) sSwallow = 1;
+            }
+            if (pressed & DBG_BTN_CIRCLE) {
+                sOpen = 0;
+                sSwallow = 1;
+            }
         } else {
-            const int count = oot_ps3_debug_warp_count();
+            const int page = sPage;
+            const int count = ListCount(page);
+            int* sel = &sListSel[page];
             if (count > 0) {
-                if (act & DBG_BTN_UP) sWarpSel = (sWarpSel + count - 1) % count;
-                if (act & DBG_BTN_DOWN) sWarpSel = (sWarpSel + 1) % count;
-                if (act & DBG_BTN_L1) sWarpSel = sWarpSel >= 10 ? sWarpSel - 10 : 0;
-                if (act & DBG_BTN_R1) sWarpSel = sWarpSel + 10 < count ? sWarpSel + 10 : count - 1;
+                const int before = *sel;
+                if (act & DBG_BTN_UP) *sel = (*sel + count - 1) % count;
+                if (act & DBG_BTN_DOWN) *sel = (*sel + 1) % count;
+                if (act & DBG_BTN_L1) *sel = *sel >= 10 ? *sel - 10 : 0;
+                if (act & DBG_BTN_R1) *sel = *sel + 10 < count ? *sel + 10 : count - 1;
+                if (*sel >= count) *sel = count - 1;
+                if (*sel != before) sCsAge = -1;
+                if (page == PAGE_CUTSCENE && (pressed & (DBG_BTN_LEFT | DBG_BTN_RIGHT)))
+                    sCsAge = (sCsAge >= 0 ? sCsAge : oot_ps3_debug_cutscene_age(*sel)) ^ 1;
                 if (pressed & DBG_BTN_CROSS) {
-                    if (oot_ps3_debug_warp(sWarpSel)) {
+                    int ok = 0;
+                    if (page == PAGE_WARP) ok = oot_ps3_debug_warp(*sel);
+                    else if (page == PAGE_CUTSCENE)
+                        ok = oot_ps3_debug_play_cutscene(*sel, sCsAge >= 0 ? sCsAge : oot_ps3_debug_cutscene_age(*sel));
+                    if (page == PAGE_ITEMS) {
+                        char msg[80];
+                        if (oot_ps3_debug_give_item(*sel)) snprintf(msg, sizeof(msg), "Given: %s", ListName(page, *sel));
+                        else snprintf(msg, sizeof(msg), "Items can only be given during gameplay");
+                        SetStatus(msg);
+                    } else if (ok) {
                         sOpen = 0;
                         sPage = 0;
+                        sSwallow = 1;
                     } else {
-                        SetStatus("Warp only works during gameplay");
+                        SetStatus("Not possible right now");
                     }
                 }
             }
@@ -503,8 +597,8 @@ void oot_ps3_debug_overlay_frame(unsigned int screenWidth, unsigned int screenHe
     if (now - sLastRefreshUs >= 250000ULL || sOpen) {
         sLastRefreshUs = now;
         if (sOpen) {
-            if (sPage == 0) BuildMain();
-            else BuildWarp();
+            if (sPage == PAGE_MAIN) BuildMain();
+            else BuildList(sPage);
         } else {
             BuildHud();
         }

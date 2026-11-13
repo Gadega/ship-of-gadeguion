@@ -343,6 +343,8 @@ static s8 ScaleStick(u16 raw) {
 }
 
 int oot_ps3_debug_input(unsigned int buttons); /* ps3_debug_overlay.c */
+int oot_ps3_game_menu_input(unsigned int buttons); /* ps3_game_menu.c */
+int oot_ps3_game_menu_open(void);
 
 static void FillPad(OSContPad* output, const padData* input) {
     output->button = 0;
@@ -377,7 +379,9 @@ static void FillPad(OSContPad* output, const padData* input) {
         if (input->BTN_CIRCLE) dbg |= 0x0040U;
         if (input->BTN_L1) dbg |= 0x0080U;
         if (input->BTN_R1) dbg |= 0x0100U;
-        if (oot_ps3_debug_input(dbg)) {
+        if (input->BTN_SELECT) dbg |= 0x0200U;
+        /* Game menu (SELECT) first; the debug menu (R3) only while it is closed. */
+        if (oot_ps3_game_menu_input(dbg) || (!oot_ps3_game_menu_open() && oot_ps3_debug_input(dbg & ~0x0200U))) {
             output->button = 0;
             output->stick_x = output->stick_y = 0;
             output->right_stick_x = output->right_stick_y = 0;

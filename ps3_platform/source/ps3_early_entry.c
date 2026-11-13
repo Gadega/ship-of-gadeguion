@@ -952,6 +952,10 @@ void oot_ps3_early_trace_flush_usb(void);
 void oot_ps3_pad_refresh(void);
 int oot_ps3_pad_select_held(void);
 static volatile int sPs3ExitRequested = 0;
+/* Game menu "Quit to XMB": leaves at the next oot_ps3_poll_exit (every frame). */
+void oot_ps3_request_exit(void) {
+    sPs3ExitRequested = 1;
+}
 static void Ps3SysutilHandler(u64 status, u64 param, void* userdata) {
     (void)param;
     (void)userdata;
@@ -971,11 +975,7 @@ void oot_ps3_poll_exit(void) {
     }
     /* Shared pad state (shipwright_os_ps3.c): reading the pad here directly
      * would consume button changes the game needs. */
-    oot_ps3_pad_refresh();
-    if (oot_ps3_pad_select_held()) {
-        oot_ps3_early_trace("xmb: SELECT pressed");
-        sPs3ExitRequested = 1;
-    }
+    oot_ps3_pad_refresh(); /* SELECT opens the game menu now; it no longer quits */
     if (sPs3ExitRequested) {
         oot_ps3_early_trace("xmb: exit requested; leaving cleanly");
         oot_ps3_audio_shutdown();

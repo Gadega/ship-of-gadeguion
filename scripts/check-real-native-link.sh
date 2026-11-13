@@ -139,6 +139,15 @@ PS3_PORTLIBS="${PS3DEV:-/usr/local/ps3dev}/portlibs/ppu"
     -c "$ROOT/ps3_platform/source/ps3_setup_screen.c" \
     -o "$OUT/objects/ps3_setup_screen.o" >"$OUT/logs/ps3-setup-screen.log" 2>&1 || {
     echo 'BLOCKED compiling setup screen'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/ps3-setup-screen.log"; exit 3; }
+# Menu text renderer (font atlas) and the SELECT game menu.
+for ui_src in ps3_ui ps3_game_menu; do
+"${cc_run[@]}" -std=gnu11 -O2 -mcpu=cell -ffunction-sections -fdata-sections -Wall -Wextra -Werror \
+    "-DOOT_PS3_PORT_VERSION=\"$(grep -m1 '^PORT_VERSION=' "$ROOT/scripts/package-real-native.sh" | cut -d'"' -f2)\"" \
+    "-I$PS3_SDK_ROOT/ppu/include" "-I$PS3_PORTLIBS/include" \
+    -c "$ROOT/ps3_platform/source/$ui_src.c" \
+    -o "$OUT/objects/$ui_src.o" >"$OUT/logs/$ui_src.log" 2>&1 || {
+    echo "BLOCKED compiling $ui_src"; grep -m3 -E 'fatal error:|error:' "$OUT/logs/$ui_src.log"; exit 3; }
+done
 # SPU audio mixer: the SPU program (spu-gcc), embedded as a C array, and its PPU driver.
 SPU_GCC="${PS3_SDK_ROOT}/spu/bin/spu-gcc"
 [ -x "$SPU_GCC" ] || SPU_GCC="$(command -v spu-gcc || true)"
@@ -421,7 +430,7 @@ fi
 if ! strings "$OUT/objects/game-state-init.o" | grep -F 'game-init: before graphics queue send' >/dev/null ||
    ! strings "$OUT/objects/game-play-init.o" | grep -F 'play-init: entrance lookup completed' >/dev/null ||
    ! strings "$OUT/objects/game-cutscene-conditional.o" | grep -F 'cutscene-conditional: PS3 diagnostic skips uninitialized hook' >/dev/null ||
-   ! strings "$OUT/objects/game-cutscene-conditional.o" | grep -F 'cutscene-entrance: PS3 diagnostic skips uninitialized hook' >/dev/null ||
+   ! strings "$OUT/objects/game-cutscene-conditional.o" | grep -F 'cutscene-entrance: first-visit cutscenes enabled' >/dev/null ||
    ! strings "$OUT/objects/game-message-init.o" | grep -F 'message-init: NTSC font table unavailable; diagnostic skip' >/dev/null ||
    ! strings "$OUT/objects/game-message-init.o" | grep -F 'interface-init: before parameter DMA' >/dev/null ||
    ! strings "$OUT/objects/game-message-tables.o" | grep -F 'message-tables: before OTRMessage_Init' >/dev/null; then
@@ -456,7 +465,7 @@ if ! OOT_PS3_FAST3D_OBJECT_MODE=1 bash "$ROOT/scripts/check-ps3-fast3d-interpret
 fi
 echo 'Fresh native Fast3D interpreter, PS3 O2R adapter, and renderer compiled'
 
-objects=("$OUT/objects/bootstrap.o" "$OUT/objects/vanilla.o" "$OUT/objects/rsx_screen.o" "$OUT/objects/fast3d_rsx_ps3.o" "$OUT/objects/ps3_process_param.o" "$OUT/objects/ps3_sbrk_fixed.o" "$OUT/objects/ps3_newlib_lock.o" "$OUT/objects/ps3_glob_fixed.o" "$OUT/objects/ps3_early_entry.o" "$OUT/objects/ps3_jpeg.o" "$OUT/objects/ps3_audio.o" "$OUT/objects/ps3_savedata.o" "$OUT/objects/ps3_debug_overlay.o" "$OUT/objects/ps3_setup_screen.o" "$OUT/objects/ps3_heap_guard.o" "$OUT/objects/ps3_spu_audio.o" "$OUT/objects/shipwright_video.o" \
+objects=("$OUT/objects/bootstrap.o" "$OUT/objects/vanilla.o" "$OUT/objects/rsx_screen.o" "$OUT/objects/fast3d_rsx_ps3.o" "$OUT/objects/ps3_process_param.o" "$OUT/objects/ps3_sbrk_fixed.o" "$OUT/objects/ps3_newlib_lock.o" "$OUT/objects/ps3_glob_fixed.o" "$OUT/objects/ps3_early_entry.o" "$OUT/objects/ps3_jpeg.o" "$OUT/objects/ps3_audio.o" "$OUT/objects/ps3_savedata.o" "$OUT/objects/ps3_debug_overlay.o" "$OUT/objects/ps3_setup_screen.o" "$OUT/objects/ps3_ui.o" "$OUT/objects/ps3_game_menu.o" "$OUT/objects/ps3_heap_guard.o" "$OUT/objects/ps3_spu_audio.o" "$OUT/objects/shipwright_video.o" \
     "$OUT/objects/software_renderer.o" "$OUT/objects/mixer.o")
 if ! "$LD_BIN" -r -o "$OUT/shipwright-native-bootstrap.o" "$BASE" "${objects[@]}" >"$OUT/logs/reloc-link.log" 2>&1; then
     echo 'BLOCKED: native bootstrap relocatable link failed'

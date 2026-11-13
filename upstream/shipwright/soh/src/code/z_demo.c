@@ -2280,12 +2280,9 @@ void Cutscene_HandleEntranceTriggers(PlayState* play) {
     u8 requiredAge;
     s16 i;
 
-#ifdef __PS3__
-    // This table unconditionally invokes GameInteractor_Should, which is not
-    // initialized in the current constructor-free PS3 diagnostic.
-    CUTSCENE_PS3_TRACE("cutscene-entrance: PS3 diagnostic skips uninitialized hook");
-    return;
-#endif
+    /* PS3: GameInteractor_Should is wrapped to return its default (2026-11-13: first-visit
+     * cutscenes enabled again; they were skipped since the bring-up). */
+    CUTSCENE_PS3_TRACE("cutscene-entrance: first-visit cutscenes enabled");
 
     for (i = 0; i < ARRAY_COUNT(sEntranceCutsceneTable); i++) {
         entranceCutscene = &sEntranceCutsceneTable[i];

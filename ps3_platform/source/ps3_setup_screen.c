@@ -21,7 +21,7 @@
 #include <unistd.h>
 #include <zlib.h>
 
-#include "../../third_party/font8x8/font8x8_basic.h"
+#include "ps3_ui.h"
 
 #ifndef OOT_PS3_PORT_VERSION
 #define OOT_PS3_PORT_VERSION "dev"
@@ -31,14 +31,11 @@
 #define GAME_O2R USRDIR "/oot.o2r"
 #define GAME_O2R_TMP USRDIR "/oot.o2r.part"
 #define SOH_O2R USRDIR "/soh.o2r"
-#define DEBUG_MENU_FLAG USRDIR "/debug_menu_on"
 #define ICON0_PATH "/dev_hdd0/game/OOTP30048/ICON0.PNG"
 
 /* Elsewhere in the port. */
 void oot_ps3_early_trace(const char* message);
 void oot_ps3_early_trace_flush_usb(void);
-int oot_ps3_trace_enabled(void);
-void oot_ps3_trace_set_enabled(int on);
 void oot_ps3_poll_exit(void);
 void oot_ps3_watchdog_kick(void); /* shipwright_video_ps3.c: a frame was shown */
 unsigned int oot_ps3_pad_menu_buttons(void); /* shipwright_os_ps3.c */
@@ -47,11 +44,6 @@ uint32_t oot_ps3_shipwright_video_height(void);
 void oot_ps3_shipwright_video_present_fast3d(void);
 int oot_ps3_rsx_begin(uint32_t width, uint32_t height);
 void oot_ps3_rsx_end(void);
-int oot_ps3_rsx_overlay_upload(const uint8_t* rgba, uint32_t width, uint32_t height);
-void oot_ps3_rsx_set_depth(int test, int write);
-void oot_ps3_rsx_set_decal(int decal);
-void oot_ps3_rsx_viewport(int x, int y, int width, int height);
-void oot_ps3_rsx_scissor(int x, int y, int width, int height);
 void oot_ps3_rsx_set_draw_state(uint32_t uv0Off, uint32_t uv1Off, uint32_t fogOff, uint32_t inputOff,
                                 uint32_t inputPer, float flags, const float packs[4]);
 int oot_ps3_rsx_triangles(const float* vbo, uint32_t stride, uint32_t triangles, uint32_t texture0_id,
@@ -459,60 +451,24 @@ static int BuildIcon(const char* o2rPath) {
 }
 
 /* ===================================================================== screen */
-enum { SCR_W = 512, SCR_H = 288, SCREEN_TEXTURE_ID = 0x4000 };
-static uint8_t sPixels[SCR_W * SCR_H * 4];
+typedef struct {
+    int state, installed, drives, usb;
+    double progress;
+    char name[64], version[64], message[96], error[96];
+} ScreenInfo;
 
-static void FillRect(int x0, int y0, int w, int h, const uint8_t rgb[3]) {
-    int x, y;
-    for (y = y0 < 0 ? 0 : y0; y < y0 + h && y < SCR_H; ++y)
-        for (x = x0 < 0 ? 0 : x0; x < x0 + w && x < SCR_W; ++x) {
-            uint8_t* p = &sPixels[((size_t)y * SCR_W + x) * 4];
-            p[0] = rgb[0]; p[1] = rgb[1]; p[2] = rgb[2]; p[3] = 255;
-        }
-}
+static void Draw(const ScreenInfo* si);
 
-static void Text(int x, int y, int scale, const uint8_t rgb[3], const char* text) {
-    for (; *text != '\0'; ++text, x += 8 * scale) {
-        const uint8_t* glyph = font8x8_basic[(unsigned char)*text & 0x7F];
-        int gx, gy;
-        for (gy = 0; gy < 8; ++gy)
-            for (gx = 0; gx < 8; ++gx)
-                if (glyph[gy] & (1U << gx)) FillRect(x + gx * scale, y + gy * scale, scale, scale, rgb);
-    }
-}
-
-static int TextWidth(const char* text, int scale) {
-    return (int)strlen(text) * 8 * scale;
-}
-
-static void TextCentered(int y, int scale, const uint8_t rgb[3], const char* text) {
-    Text((SCR_W - TextWidth(text, scale)) / 2, y, scale, rgb, text);
-}
-
-static const uint8_t kWhite[3] = { 235, 235, 240 }, kDim[3] = { 140, 150, 170 }, kGold[3] = { 255, 214, 90 },
-                     kGreen[3] = { 130, 240, 140 }, kRed[3] = { 255, 120, 110 }, kShadow[3] = { 10, 14, 30 },
-                     kSelect[3] = { 40, 70, 120 }, kBar[3] = { 90, 200, 120 }, kBarBack[3] = { 30, 40, 60 },
-                     kTitle[3] = { 150, 215, 255 };
-
-static void Present(void) {
+static void Present(const ScreenInfo* si) {
     const uint32_t w = oot_ps3_shipwright_video_width(), h = oot_ps3_shipwright_video_height();
     oot_ps3_watchdog_kick(); /* the screen may stay open for hours: not a freeze */
     if (w == 0 || h == 0 || !oot_ps3_rsx_begin(w, h)) {
         usleep(16000);
         return;
     }
-    if (oot_ps3_rsx_overlay_upload(sPixels, SCR_W, SCR_H)) {
-        /* x, y, z, w, u, v: the whole screen, two triangles */
-        const float v[6][6] = { { -1, 1, 0, 1, 0, 0 }, { 1, 1, 0, 1, 1, 0 }, { 1, -1, 0, 1, 1, 1 },
-                                { -1, 1, 0, 1, 0, 0 }, { 1, -1, 0, 1, 1, 1 }, { -1, -1, 0, 1, 0, 1 } };
-        const float texel0 = 8.0f * 4096.0f; /* combiner D = TEXEL0 */
-        const float packs[4] = { texel0, texel0, texel0, texel0 };
-        oot_ps3_rsx_set_depth(0, 0);
-        oot_ps3_rsx_set_decal(0);
-        oot_ps3_rsx_viewport(0, 0, (int)w, (int)h);
-        oot_ps3_rsx_scissor(0, 0, (int)w, (int)h);
-        oot_ps3_rsx_set_draw_state(4U, 0xFFFFU, 0xFFFFU, 6U, 4U, 2.0f, packs);
-        oot_ps3_rsx_triangles(&v[0][0], 6U, 2U, SCREEN_TEXTURE_ID, 0U, 1, 0U, 0);
+    if (ps3ui_begin(w, h)) {
+        Draw(si);
+        ps3ui_end();
     }
     oot_ps3_rsx_end();
     oot_ps3_shipwright_video_present_fast3d();
@@ -623,19 +579,6 @@ static int FindSource(Source* source, ArchiveInfo* info, int* drives) {
 /* ===================================================================== the screen */
 enum { ST_SEARCH, ST_FOUND, ST_BAD, ST_COPY, ST_DONE, ST_FAILED };
 
-static int DebugMenuFlag(void) {
-    return Exists(DEBUG_MENU_FLAG);
-}
-
-static void SetDebugMenuFlag(int on) {
-    if (on) {
-        const int fd = open(DEBUG_MENU_FLAG, O_WRONLY | O_CREAT, 0666);
-        if (fd >= 0) close(fd);
-    } else {
-        unlink(DEBUG_MENU_FLAG);
-    }
-}
-
 /* A PKG update puts the built-in text icon back: draw the logo again whenever ICON0.PNG
  * isn't the one this code wrote last (size remembered in USRDIR/icon_size). */
 #define ICON_SIZE_FILE USRDIR "/icon_size"
@@ -673,12 +616,96 @@ static int TriangleHeldAtBoot(void) {
     return 0;
 }
 
+#define C_TITLE 0x9ED6FFFFU
+#define C_TEXT 0xE6EDF7FFU
+#define C_DIM 0x9AAAC4FFU
+#define C_GOOD 0x8CF0A0FFU
+#define C_WARN 0xFFD25AFFU
+#define C_BAD 0xFF8C80FFU
+
+static void Draw(const ScreenInfo* si) {
+    const float W = ps3ui_width(), cx = W * 0.5f;
+    const float cardW = 1120.0f, cardX = cx - cardW * 0.5f, cardY = 420.0f, cardH = 400.0f;
+    const char* button = NULL;
+    char line[128];
+    ps3ui_gradient(0, 0, W, 1080, 0x08112AFF, 0x18315CFF, 32);
+    ps3ui_text_centered(cx + 4, 154, 104, 0x02061090U, 1, "Ship of Gadeguion");
+    ps3ui_text_centered(cx, 150, 104, C_TITLE, 1, "Ship of Gadeguion");
+    ps3ui_text_centered(cx, 290, 36, 0xC8D6EAFF, 0, "A native port of Ship of Harkinian for the PlayStation 3");
+    ps3ui_rect(cx - 300, 360, 600, 2, 0x5FA8E8B0);
+
+    ps3ui_rect(cardX, cardY, cardW, cardH, 0x0A1636C8);
+    ps3ui_rect(cardX, cardY, cardW, 4, 0x5FA8E8FF);
+    switch (si->state) {
+        case ST_SEARCH:
+            if (si->installed) {
+                ps3ui_text_centered(cx, cardY + 60, 44, C_GOOD, 1, "The game is installed");
+                ps3ui_text_centered(cx, cardY + 140, 30, C_DIM, 0, "To replace it, plug in a USB drive with another .o2r file.");
+                button = "Start the game";
+            } else if (si->drives == 0) {
+                ps3ui_text_centered(cx, cardY + 60, 44, C_TEXT, 1, "Plug in a USB drive with your game file");
+                ps3ui_text_centered(cx, cardY + 140, 30, C_DIM, 0, "The oot.o2r that Ship of Harkinian makes from your own ROM.");
+                ps3ui_text_centered(cx, cardY + 186, 30, C_DIM, 0, "Any .o2r name works, in the root of the drive or in a folder.");
+            } else {
+                ps3ui_text_centered(cx, cardY + 60, 44, C_WARN, 1, "No .o2r file on the USB drive");
+                ps3ui_text_centered(cx, cardY + 140, 30, C_DIM, 0, "Put it in the root of the drive or in a folder.");
+                ps3ui_text_centered(cx, cardY + 186, 30, C_DIM, 0, "The PS3 can't read exFAT or NTFS drives: use FAT32.");
+            }
+            break;
+        case ST_FOUND:
+            ps3ui_text_centered(cx, cardY + 60, 44, C_GOOD, 1, "Game file found");
+            snprintf(line, sizeof(line), "%s  (USB drive %d)", si->name, si->usb);
+            ps3ui_text_centered(cx, cardY + 140, 30, C_TEXT, 0, line);
+            snprintf(line, sizeof(line), "Game version: %s", si->version);
+            ps3ui_text_centered(cx, cardY + 186, 30, strcmp(si->version, "NTSC-U 1.0") == 0 ? C_DIM : C_WARN, 0, line);
+            button = "Install";
+            break;
+        case ST_BAD:
+            ps3ui_text_centered(cx, cardY + 60, 44, C_BAD, 1, "This file can't be used");
+            ps3ui_text_centered(cx, cardY + 140, 30, C_DIM, 0, si->error);
+            if (si->installed) button = "Start the game";
+            break;
+        case ST_COPY: {
+            const float barW = 860, barX = cx - barW * 0.5f;
+            ps3ui_text_centered(cx, cardY + 60, 44, C_TEXT, 1, "Installing...");
+            ps3ui_rect(barX, cardY + 170, barW, 22, 0x1E2C4CFF);
+            ps3ui_rect(barX, cardY + 170, (float)(barW * si->progress), 22, 0x6EC8FFFF);
+            snprintf(line, sizeof(line), "%d%%", (int)(si->progress * 100.0 + 0.5));
+            ps3ui_text_centered(cx, cardY + 220, 30, C_DIM, 0, line);
+            break;
+        }
+        case ST_DONE:
+            ps3ui_text_centered(cx, cardY + 60, 44, C_GOOD, 1, "Installed!");
+            ps3ui_text_centered(cx, cardY + 140, 30, C_DIM, 0, "The XMB icon changes the next time you see the XMB.");
+            button = "Start the game";
+            break;
+        case ST_FAILED:
+            ps3ui_text_centered(cx, cardY + 60, 44, C_BAD, 1, "Installation failed");
+            ps3ui_text_centered(cx, cardY + 140, 30, C_DIM, 0, si->message);
+            button = "Try again";
+            break;
+    }
+    if (button != NULL) {
+        const float bw = 480, bx = cx - bw * 0.5f, by = cardY + cardH - 120;
+        ps3ui_rect(bx, by, bw, 76, 0x2E64A8FF);
+        ps3ui_rect(bx, by + 72, bw, 4, 0x1C3F70FF);
+        snprintf(line, sizeof(line), "X   %s", button);
+        ps3ui_text_centered(cx, by + 18, 36, 0xFFFFFFFF, 1, line);
+    }
+    if (si->installed && si->state != ST_COPY && si->state != ST_DONE && si->state != ST_SEARCH)
+        ps3ui_text_centered(cx, cardY + cardH + 40, 28, C_DIM, 0, "O   start the installed game");
+    ps3ui_rect(0, 1080 - 76, W, 76, 0x050A18E0);
+    ps3ui_text(48, 1080 - 56, 30, 0xC8D6EAFF, 0, "Port made by Gadega");
+    ps3ui_text_right(W - 48, 1080 - 56, 30, 0xC8D6EAFF, 0, "v" OOT_PS3_PORT_VERSION);
+}
+
 void oot_ps3_setup_screen(void) {
     const int installed = FileSize(GAME_O2R) > 0;
-    int state = ST_SEARCH, sel = 0, frame = 0, debugMenu, logs, drives = 0;
+    int state = ST_SEARCH, frame = 0, drives = 0;
     unsigned int prev = 0;
     Source source;
     ArchiveInfo info;
+    ScreenInfo si;
     int in = -1, out = -1;
     long long copied = 0;
     char message[96] = "";
@@ -692,26 +719,20 @@ void oot_ps3_setup_screen(void) {
         if (!TriangleHeldAtBoot()) return;
     }
     Trace("trace: setup screen opened (game file %s)", installed ? "installed" : "missing");
-    debugMenu = DebugMenuFlag();
-    logs = oot_ps3_trace_enabled();
     memset(&source, 0, sizeof(source));
     memset(&info, 0, sizeof(info));
     prev = oot_ps3_pad_menu_buttons();
     for (;; ++frame) {
         unsigned int buttons, pressed;
-        int items = 3; /* debug menu, logs, action */
-        const char* action;
-        oot_ps3_poll_exit(); /* SELECT / XMB Quit Game */
+        oot_ps3_poll_exit(); /* XMB Quit Game */
         buttons = oot_ps3_pad_menu_buttons();
         pressed = buttons & ~prev;
         prev = buttons;
 
-        /* ---- work ---- */
         /* Every second: the first usable .o2r on any USB drive is picked automatically. */
         if ((state == ST_SEARCH || state == ST_FOUND || state == ST_BAD) && frame % 60 == 0) {
             sLastError[0] = '\0';
             if (FindSource(&source, &info, &drives)) {
-                if (state != ST_FOUND) sel = 2; /* just found: select the install button */
                 state = ST_FOUND;
             } else {
                 info.ok = 0;
@@ -722,7 +743,7 @@ void oot_ps3_setup_screen(void) {
         if (state == ST_COPY) {
             const ssize_t n = read(in, chunk, sizeof(chunk));
             if (n < 0 || (n > 0 && write(out, chunk, (size_t)n) != n)) {
-                snprintf(message, sizeof(message), "Copy failed (USB drive removed or HDD full?).");
+                snprintf(message, sizeof(message), "The copy stopped (USB drive removed or HDD full?).");
                 state = ST_FAILED;
             } else if (n > 0) {
                 copied += n;
@@ -733,7 +754,7 @@ void oot_ps3_setup_screen(void) {
                 close(out);
                 out = -1;
                 if (copied != source.size) {
-                    snprintf(message, sizeof(message), "Copy incomplete (%lld of %lld bytes).", copied, source.size);
+                    snprintf(message, sizeof(message), "Only %lld of %lld bytes were copied.", copied, source.size);
                     state = ST_FAILED;
                 } else {
                     unlink(GAME_O2R);
@@ -757,7 +778,6 @@ void oot_ps3_setup_screen(void) {
                                   info.version, icon ? "written" : "FAILED");
                         }
                         state = ST_DONE;
-                        sel = 2;
                     }
                 }
             }
@@ -770,150 +790,48 @@ void oot_ps3_setup_screen(void) {
             }
         }
 
-        /* ---- action item ---- */
-        switch (state) {
-            case ST_FOUND: action = "Install the game file from the USB drive"; break;
-            case ST_COPY: action = "Copying..."; break;
-            case ST_DONE: action = "Start the game"; break;
-            case ST_FAILED: action = "Try again"; break;
-            default: action = installed ? "Start the game" : "Waiting for a USB drive..."; break;
-        }
-
-        /* ---- input ---- */
-        if (state != ST_COPY) {
-            if (pressed & PAD_UP) sel = (sel + items - 1) % items;
-            if (pressed & PAD_DOWN) sel = (sel + 1) % items;
-            if (pressed & (PAD_CROSS | PAD_START)) {
-                if (sel == 0) {
-                    debugMenu = !debugMenu;
-                    SetDebugMenuFlag(debugMenu);
-                    Trace("trace: setup debug menu %s", debugMenu ? "on" : "off");
-                } else if (sel == 1) {
-                    logs = !logs;
-                    oot_ps3_trace_set_enabled(logs);
-                } else if (state == ST_FOUND) {
-                    in = open(source.path, O_RDONLY);
-                    out = in >= 0 ? open(GAME_O2R_TMP, O_WRONLY | O_CREAT | O_TRUNC, 0666) : -1;
-                    copied = 0;
-                    if (in < 0 || out < 0) {
-                        if (in >= 0) close(in);
-                        in = -1;
-                        snprintf(message, sizeof(message), "Could not open the files for copying.");
-                        state = ST_FAILED;
-                    } else {
-                        Trace("trace: setup copying %s", source.path);
-                        state = ST_COPY;
-                    }
-                } else if (state == ST_DONE || (installed && state != ST_FAILED)) {
-                    Trace("trace: setup done; starting the game");
-                    return;
-                } else if (state == ST_FAILED) {
-                    state = ST_SEARCH;
-                    message[0] = '\0';
-                    frame = -1;
+        /* ---- input: X = the button on screen, O = start the installed game ---- */
+        if (pressed & (PAD_CROSS | PAD_START)) {
+            if (state == ST_FOUND) {
+                in = open(source.path, O_RDONLY);
+                out = in >= 0 ? open(GAME_O2R_TMP, O_WRONLY | O_CREAT | O_TRUNC, 0666) : -1;
+                copied = 0;
+                if (in < 0 || out < 0) {
+                    if (in >= 0) close(in);
+                    in = -1;
+                    snprintf(message, sizeof(message), "Could not open the files for copying.");
+                    state = ST_FAILED;
+                } else {
+                    Trace("trace: setup copying %s", source.path);
+                    state = ST_COPY;
                 }
+            } else if (state == ST_DONE || (installed && (state == ST_SEARCH || state == ST_BAD))) {
+                Trace("trace: setup done; starting the game");
+                return;
+            } else if (state == ST_FAILED) {
+                state = ST_SEARCH;
+                message[0] = '\0';
+                frame = -1;
             }
         }
-
         if (installed && state != ST_COPY && (pressed & PAD_CIRCLE)) {
             Trace("trace: setup closed; starting the installed game");
             return;
         }
 
-        /* ---- draw ---- */
-        {
-            int y;
-            char line[80];
-            for (y = 0; y < SCR_H; ++y) { /* dark blue gradient */
-                const uint8_t rgb[3] = { (uint8_t)(8 + y / 24), (uint8_t)(14 + y / 14), (uint8_t)(38 + y / 6) };
-                FillRect(0, y, SCR_W, 1, rgb);
-            }
-            Text((SCR_W - TextWidth("Ship of Gadeguion", 3)) / 2 + 2, 22, 3, kShadow, "Ship of Gadeguion");
-            TextCentered(20, 3, kTitle, "Ship of Gadeguion");
-            TextCentered(52, 1, kWhite, "A native port of Ship of Harkinian for the PlayStation 3");
-            FillRect(40, 68, SCR_W - 80, 1, kDim);
-
-            y = 82;
-            switch (state) {
-                case ST_SEARCH:
-                    if (installed) {
-                        TextCentered(y, 1, kGreen, "The game file is installed.");
-                        TextCentered(y + 12, 1, kDim, "To replace it, plug in a USB drive with a new .o2r file.");
-                    } else if (drives == 0) {
-                        TextCentered(y, 1, kGold, "Plug in a USB drive with your oot.o2r file.");
-                        TextCentered(y + 12, 1, kDim, "Ship of Harkinian (PC) makes it from your own ROM.");
-                        TextCentered(y + 24, 1, kDim, "Any .o2r file name works, in the root or in a folder.");
-                    } else {
-                        TextCentered(y, 1, kGold, "No .o2r file found on the USB drive.");
-                        TextCentered(y + 12, 1, kDim, "Put it in the root of the drive or in a folder.");
-                        TextCentered(y + 24, 1, kDim, "exFAT/NTFS drives can't be read by the PS3: use FAT32.");
-                    }
-                    break;
-                case ST_FOUND:
-                    snprintf(line, sizeof(line), "Found %.36s on USB drive %d (%.1f MB)",
-                             source.path + 12, source.usb, source.size / 1048576.0);
-                    TextCentered(y, 1, kGreen, line);
-                    snprintf(line, sizeof(line), "Game version: %.48s", info.version);
-                    TextCentered(y + 12, 1, kWhite, line);
-                    if (info.crc != 0xEC7011B7U)
-                        TextCentered(y + 24, 1, kGold, "Only NTSC-U 1.0 has been tested so far.");
-                    break;
-                case ST_BAD:
-                    TextCentered(y, 1, kRed, "The .o2r file on the USB drive can't be used:");
-                    TextCentered(y + 12, 1, kRed, sLastError);
-                    break;
-                case ST_COPY: {
-                    const int barW = SCR_W - 120;
-                    const int done = source.size > 0 ? (int)(barW * (double)copied / (double)source.size) : 0;
-                    snprintf(line, sizeof(line), "Copying the game file... %d%%",
-                             source.size > 0 ? (int)(100.0 * copied / source.size) : 0);
-                    TextCentered(y, 1, kWhite, line);
-                    FillRect(60, y + 14, barW, 10, kBarBack);
-                    FillRect(60, y + 14, done, 10, kBar);
-                    break;
-                }
-                case ST_DONE:
-                    TextCentered(y, 1, kGreen, "Installed! The XMB icon changes when you return to the XMB.");
-                    snprintf(line, sizeof(line), "Game version: %.48s", info.version);
-                    TextCentered(y + 12, 1, kWhite, line);
-                    break;
-                case ST_FAILED:
-                    TextCentered(y, 1, kRed, message);
-                    break;
-            }
-
-            {
-                const char* labels[3];
-                char opt0[64], opt1[64];
-                int i;
-                snprintf(opt0, sizeof(opt0), "[%c] Debug menu in game (R3 opens it)", debugMenu ? 'X' : ' ');
-                snprintf(opt1, sizeof(opt1), "[%c] Save log files (HDD + USB drive)", logs ? 'X' : ' ');
-                labels[0] = opt0;
-                labels[1] = opt1;
-                labels[2] = action;
-                static const char* const kHelp[2] = {
-                    "Performance info, warps, age switch, screenshots.",
-                    "Crash logs saved on the HDD and your USB drive.",
-                };
-                static const int kRowY[3] = { 146, 176, 210 };
-                Text(80, 130, 1, kTitle, "Build options");
-                FillRect(80, 140, TextWidth("Build options", 1), 1, kTitle);
-                for (i = 0; i < 3; ++i) {
-                    const int rowY = kRowY[i];
-                    const int enabled = i != 2 || state == ST_FOUND || state == ST_DONE || state == ST_FAILED ||
-                                        (installed && (state == ST_SEARCH || state == ST_BAD));
-                    if (i == sel) FillRect(80, rowY - 4, SCR_W - 160, 16, kSelect);
-                    Text(96, rowY, 1, i == sel ? kGold : enabled ? kWhite : kDim, labels[i]);
-                    if (i < 2) Text(112, rowY + 13, 1, kDim, kHelp[i]);
-                }
-            }
-            TextCentered(238, 1, kDim, installed ? "X: select    O: start the game    SELECT: quit"
-                                                 : "X: select    SELECT: quit");
-            FillRect(0, SCR_H - 22, SCR_W, 22, kShadow);
-            Text(8, SCR_H - 15, 1, kWhite, "Port made by Gadega");
-            snprintf(line, sizeof(line), "v%s", OOT_PS3_PORT_VERSION);
-            Text(SCR_W - 8 - TextWidth(line, 1), SCR_H - 15, 1, kWhite, line);
+        memset(&si, 0, sizeof(si));
+        si.state = state;
+        si.installed = installed;
+        si.drives = drives;
+        si.usb = source.usb;
+        si.progress = source.size > 0 ? (double)copied / (double)source.size : 0.0;
+        if (state == ST_FOUND || state == ST_COPY) {
+            const char* name = strrchr(source.path, '/');
+            snprintf(si.name, sizeof(si.name), "%s", name != NULL ? name + 1 : source.path);
         }
-        Present();
+        snprintf(si.version, sizeof(si.version), "%s", info.version);
+        snprintf(si.message, sizeof(si.message), "%s", message);
+        snprintf(si.error, sizeof(si.error), "%s", sLastError);
+        Present(&si);
     }
 }

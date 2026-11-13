@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Generates ps3_platform/source/ps3_cutscene_list.inc for the debug menu's cutscene page.
+
+usage: gen_cutscene_list.py <oot.o2r>
+
+Two kinds of cutscenes:
+ * entrance cutscenes (first visit), from z_demo.c sEntranceCutsceneTable: entrance, age, flag;
+ * scene-layer cutscenes: every alternate scene header from layer 4 up that has a
+   Cutscene command in the archive; played with nextCutsceneIndex 0xFFF0 + (layer - 4)
+   through the first entrance group of that scene that has the layer.
+Only scene/entrance numbers end up in the list (no game data). Ages of layer cutscenes
+are a guess per scene (Square swaps the age in the menu)."""
+import io, contextlib, re, sys, zipfile, os
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SOH = os.path.join(ROOT, "upstream/shipwright/soh")
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+import o2r_scene_dump as dump  # noqa: E402
+
+# scene folder -> SCENE_ enum
+scene_enum = {}
+for m in re.finditer(r"DEFINE_SCENE\((\w+), \w+, (SCENE_\w+),", open(os.path.join(SOH, "include/tables/scene_table.h")).read()):
+    scene_enum[m.group(1)] = m.group(2)
+
+# entrance groups (blank-line separated)
+groups = []
+cur = []
+for line in open(os.path.join(SOH, "include/tables/entrance_table.h")):
+    m = re.search(r"DEFINE_ENTRANCE\((\w+), (SCENE_\w+), (\d+),", line)
+    if m:
+        cur.append((m.group(1), m.group(2)))
+    elif not line.strip() and cur:
+        groups.append(cur)
+        cur = []
+if cur:
+    groups.append(cur)
+
+# readable scene names from the warp list (entrance -> name), entrance -> scene
+entr_scene = {e: s for g in groups for e, s in g}
+names = {}
+for m in re.finditer(r'\{ "([^"]+)", (ENTR_\w+) \}', open(os.path.join(ROOT, "ps3_platform/source/ps3_warp_list.inc")).read()):
+    names.setdefault(entr_scene.get(m.group(2)), m.group(1))
+
+
+def scene_name(enum):
+    if enum in names:
+        return names[enum]
+    return " ".join(w.capitalize() for w in enum[len("SCENE_"):].split("_"))
+
+
+ADULT, CHILD, EITHER = 0, 1, 2
+# Guesses for layer cutscenes: scenes where the cutscenes are (almost) all one age.
+LAYER_AGE = {
+    "SCENE_LINKS_HOUSE": CHILD, "SCENE_KOKIRI_FOREST": CHILD, "SCENE_CASTLE_COURTYARD_ZELDA": CHILD,
+    "SCENE_ROYAL_FAMILYS_TOMB": CHILD, "SCENE_LOST_WOODS": CHILD, "SCENE_SHOOTING_GALLERY": CHILD,
+    "SCENE_CHAMBER_OF_THE_SAGES": ADULT, "SCENE_GANONDORF_BOSS": ADULT, "SCENE_OUTSIDE_GANONS_CASTLE": ADULT,
+    "SCENE_SPIRIT_TEMPLE_BOSS": ADULT, "SCENE_DEATH_MOUNTAIN_CRATER": ADULT, "SCENE_GANON_BOSS": ADULT,
+    "SCENE_ZORAS_FOUNTAIN": ADULT, "SCENE_GERUDO_VALLEY": ADULT, "SCENE_DESERT_COLOSSUS": ADULT,
+    "SCENE_HYRULE_FIELD": CHILD, "SCENE_HYRULE_CASTLE": CHILD, "SCENE_GRAVEYARD": ADULT,
+}
+
+entries = []
+# 1. entrance cutscenes
+demo = open(os.path.join(SOH, "src/code/z_demo.c")).read()
+table = demo[demo.index("EntranceCutscene sEntranceCutsceneTable[] = {"):]
+table = table[:table.index("};")]
+for m in re.finditer(r"\{ (ENTR_\w+), (\d), (0x[0-9A-Fa-f]+|\w+), (\w+) \}", table):
+    entr, age, flag, cs = m.groups()
+    label = re.sub(r"Cs$", "", cs[1:] if cs.startswith("g") else cs)
+    label = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", label)
+    label = label.replace("Get Oo T", "Ocarina Gift").replace("DMT", "Death Mountain Trail").replace("DMC", "Death Mountain Crater")
+    entries.append((label + " (first visit)", entr, 0, int(age), flag))
+
+# 2. scene-layer cutscenes from the archive
+z = zipfile.ZipFile(sys.argv[1])
+for path in sorted(n for n in z.namelist() if n.startswith("scenes/shared/") and n.count("/") == 3):
+    folder = path.split("/")[2]
+    if folder != path.split("/")[3] or folder not in scene_enum:
+        continue
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        try:
+            dump.dump(z, path, 0)
+        except Exception:
+            continue
+    headers = []
+    for line in buf.getvalue().splitlines():
+        if "AlternateHeaders:" in line:
+            headers = eval(line.split("AlternateHeaders:")[1])
+    enum = scene_enum[folder]
+    count = 0
+    for i, header in enumerate(headers):
+        layer = i + 1
+        if layer < 4 or not header:
+            continue
+        b = io.StringIO()
+        with contextlib.redirect_stdout(b):
+            try:
+                dump.dump(z, header, 0, depth=1)
+            except Exception:
+                continue
+        if "Cutscene:" not in b.getvalue():
+            continue
+        group = next((g for g in groups if g[0][1] == enum and len(g) > layer), None)
+        if group is None:
+            continue
+        count += 1
+        entries.append(("%s - cutscene %d" % (scene_name(enum), count), group[0][0], 0xFFF0 + layer - 4,
+                        LAYER_AGE.get(enum, EITHER), "0"))
+
+out = os.path.join(ROOT, "ps3_platform/source/ps3_cutscene_list.inc")
+with open(out, "w") as f:
+    f.write("// SPDX-License-Identifier: GPL-3.0-or-later\n")
+    f.write("// Debug-menu cutscene list, generated by scripts/gen_cutscene_list.py (scene/entrance numbers only).\n")
+    f.write("// cutsceneIndex 0 = entrance cutscene (flag = its event flag); age 0 adult, 1 child, 2 either.\n")
+    f.write("static const struct {\n    const char* name;\n    s16 entrance;\n    u16 cutsceneIndex;\n    u8 age;\n    u16 flag;\n} kPs3CutsceneList[] = {\n")
+    for name, entr, cs, age, flag in entries:
+        f.write('    { "%s", %s, 0x%04X, %d, %s },\n' % (name.replace('"', ""), entr, cs, age, flag))
+    f.write("};\n")
+print(len(entries), "cutscenes ->", out)

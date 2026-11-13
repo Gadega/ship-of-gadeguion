@@ -122,6 +122,12 @@ static float ClampUnit(float v) {
 /* 32 kHz -> 48 kHz into one 256-frame float block. Cubic instead of linear: linear
  * interpolation dulls the highs and adds faint grit/aliasing (fairy chimes, high notes).
  * The FIFO keeps one frame before the read position for the 4-point kernel. */
+/* Game menu "Master volume" (ps3_game_menu.c), 0..1. */
+static volatile float sPs3MasterVolume = 1.0f;
+void oot_ps3_audio_set_master(float volume) {
+    sPs3MasterVolume = volume < 0.0f ? 0.0f : volume > 1.0f ? 1.0f : volume;
+}
+
 static void FillBlock(float* out) {
     const double step = (double)GAME_RATE / (double)OUT_RATE;
     const double needed = sFifoPos + step * AUDIO_BLOCK_SAMPLES + 3.0;
@@ -146,8 +152,8 @@ static void FillBlock(float* out) {
             continue;
         }
         f = sFifo + (index - 1) * 2;
-        out[i * 2] = ClampUnit(Hermite(f[0], f[2], f[4], f[6], t) * (1.0f / 32768.0f));
-        out[i * 2 + 1] = ClampUnit(Hermite(f[1], f[3], f[5], f[7], t) * (1.0f / 32768.0f));
+        out[i * 2] = ClampUnit(Hermite(f[0], f[2], f[4], f[6], t) * (sPs3MasterVolume / 32768.0f));
+        out[i * 2 + 1] = ClampUnit(Hermite(f[1], f[3], f[5], f[7], t) * (sPs3MasterVolume / 32768.0f));
         sFifoPos += step;
     }
     /* Drop consumed frames but keep one before the read position as history. */

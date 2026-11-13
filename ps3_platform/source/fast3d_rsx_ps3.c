@@ -401,8 +401,12 @@ static GpuTexture textures[MAX_TEXTURES];
  * game's texture ids. */
 #define PS3_OVERLAY_TEXTURE_ID 0x4000U
 static GpuTexture sOverlayTexture;
+/* Menus' font atlas (ps3_ui.c): linear filtering, uploaded once. */
+#define PS3_UI_TEXTURE_ID 0x4001U
+static GpuTexture sUiTexture;
 static GpuTexture* Ps3Texture(uint32_t id) {
     if (id == PS3_OVERLAY_TEXTURE_ID) return &sOverlayTexture;
+    if (id == PS3_UI_TEXTURE_ID) return &sUiTexture;
     if (id & PS3_FB_TEXTURE_BIT) {
         const uint32_t fb = id & 0xFFU;
         return fb < MAX_FB_TEXTURES && sFbTextures[fb].pixels ? &sFbTextures[fb] : &textures[MAX_TEXTURES - 1];
@@ -1012,6 +1016,14 @@ int oot_ps3_rsx_overlay_upload(const uint8_t* rgba, uint32_t width, uint32_t hei
     if (!Ps3UploadRgba(&sOverlayTexture, rgba, width, height)) return 0;
     sOverlayTexture.linear = 0;
     sOverlayTexture.wrapS = sOverlayTexture.wrapT = 2;
+    return 1;
+}
+
+int oot_ps3_rsx_ui_upload(const uint8_t* rgba, uint32_t width, uint32_t height) {
+    if (!prepared || !rgba || !width || !height || width > 1024 || height > 1024) return 0;
+    if (!Ps3UploadRgba(&sUiTexture, rgba, width, height)) return 0;
+    sUiTexture.linear = 1;
+    sUiTexture.wrapS = sUiTexture.wrapT = 2;
     return 1;
 }
 
