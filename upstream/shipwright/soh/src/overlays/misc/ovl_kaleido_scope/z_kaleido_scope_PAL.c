@@ -1348,6 +1348,10 @@ void KaleidoScope_HandlePageToggles(PauseContext* pauseCtx, Input* input) {
     }
 }
 
+#ifdef __PS3__
+static Vtx* sPs3DrawnCursorVtx; /* cursor vertices allocated by the last pause draw */
+#endif
+
 void KaleidoScope_DrawCursor(PlayState* play, u16 pageIndex) {
     PauseContext* pauseCtx = &play->pauseCtx;
     u16 temp;
@@ -3086,6 +3090,9 @@ void KaleidoScope_InitVertices(PlayState* play, GraphicsContext* gfxCtx) {
     func_80823A0C(play, pauseCtx->questPageVtx, 3, 0);
 
     pauseCtx->cursorVtx = Graph_Alloc(gfxCtx, 20 * sizeof(Vtx));
+#ifdef __PS3__
+    sPs3DrawnCursorVtx = pauseCtx->cursorVtx;
+#endif
 
     for (phi_t2 = 0; phi_t2 < 20; phi_t2++) {
         pauseCtx->cursorVtx[phi_t2].v.ob[0] = pauseCtx->cursorVtx[phi_t2].v.ob[1] =
@@ -3960,7 +3967,9 @@ void KaleidoScope_Update(PlayState* play) {
      * on the cursor vertices the last draw allocated; with the render thread that buffer
      * is still being drawn, so the drawn cursor got the offset twice (misaligned pause
      * cursor). The update works on its own copy in this frame's pool instead. */
-    if (pauseCtx->cursorVtx != NULL) {
+    if (pauseCtx->cursorVtx != NULL && pauseCtx->cursorVtx == sPs3DrawnCursorVtx) {
+        /* only the buffer a draw allocated: before the first pause draw the field holds
+         * leftover garbage (reading it froze the game when START was pressed) */
         Vtx* ps3Cursor = Graph_Alloc(play->state.gfxCtx, 20 * sizeof(Vtx));
         memcpy(ps3Cursor, pauseCtx->cursorVtx, 20 * sizeof(Vtx));
         pauseCtx->cursorVtx = ps3Cursor;
