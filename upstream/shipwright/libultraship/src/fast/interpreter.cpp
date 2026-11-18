@@ -2027,7 +2027,7 @@ struct Ps3TnlDrawKey {
     RGBA prim, env, fog, blend, keyCenter, keyScale;
     uint8_t lodFrac, pad[3];
     int16_t convertK[6];
-    uint16_t uls[2], ult[2];
+    float uls[2], ult[2]; // tile offsets are floats (SoH interpolated scrolls)
     uint8_t shifts[2], shiftt[2];
     uint32_t tw[2], th[2];
 };
@@ -5246,6 +5246,16 @@ bool gfx_set_tile_size_handler_rdp(F3DGfx** cmd0) {
     return false;
 }
 
+// A float stored in a Gfx word (SoH: words.wN = FloatBits(f)) lives in the low 32 bits.
+// Gfx words are 64-bit on PS3: memcpy'ing the first 4 bytes read the HIGH half on a
+// big-endian CPU (always 0), so every SoH texture scroll (water, fire, lava) stood still.
+static inline float Ps3WordFloat(uintptr_t word) {
+    const uint32_t bits = (uint32_t)word;
+    float f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
 bool gfx_set_tile_size_interp_handler_rdp(F3DGfx** cmd0) {
     F3DGfx* cmd = *cmd0;
     Interpreter* gfx = mInstance.lock().get();
@@ -5254,11 +5264,11 @@ bool gfx_set_tile_size_interp_handler_rdp(F3DGfx** cmd0) {
         int tile = C1(24, 3);
         gfx->GfxDpSetTileSize(C1(24, 3), C0(12, 12), C0(0, 12), C1(12, 12), C1(0, 12));
         ++(*cmd0);
-        memcpy(&gfx->mRdp->texture_tile[tile].uls, &(*cmd0)->words.w0, sizeof(float));
-        memcpy(&gfx->mRdp->texture_tile[tile].ult, &(*cmd0)->words.w1, sizeof(float));
+        gfx->mRdp->texture_tile[tile].uls = Ps3WordFloat((*cmd0)->words.w0);
+        gfx->mRdp->texture_tile[tile].ult = Ps3WordFloat((*cmd0)->words.w1);
         ++(*cmd0);
-        memcpy(&gfx->mRdp->texture_tile[tile].lrs, &(*cmd0)->words.w0, sizeof(float));
-        memcpy(&gfx->mRdp->texture_tile[tile].lrt, &(*cmd0)->words.w1, sizeof(float));
+        gfx->mRdp->texture_tile[tile].lrs = Ps3WordFloat((*cmd0)->words.w0);
+        gfx->mRdp->texture_tile[tile].lrt = Ps3WordFloat((*cmd0)->words.w1);
     } else {
         ++(*cmd0);
         ++(*cmd0);
@@ -5275,8 +5285,8 @@ bool gfx_set_tile_size_lerp_handler_rdp(F3DGfx** cmd0) {
     float coords[8];
     for (int i = 0; i < 8; i += 2) {
         ++(*cmd0);
-        memcpy(&coords[i], &(*cmd0)->words.w0, sizeof(float));
-        memcpy(&coords[i + 1], &(*cmd0)->words.w1, sizeof(float));
+        coords[i] = Ps3WordFloat((*cmd0)->words.w0);
+        coords[i + 1] = Ps3WordFloat((*cmd0)->words.w1);
     }
 
     float t = gfx->mInterpolationT;
@@ -6442,6 +6452,24 @@ void gfx_cc_get_features(uint64_t shader_id0, uint64_t shader_id1, struct CCFeat
 
     cc_features->shader_id = Fast::ShaderIdUnmask(shader_id1);
 }
+
+#ifdef __PS3__
+// SoH's Gfx_RegisterBlendedTexture / Gfx_UnregisterBlendedTexture / Gfx_TextureCacheDelete
+// (OTRGlobals.cpp) for the PS3 bootstrap: the dungeon map's current-room highlight is a
+// recoloured copy drawn through the masked-texture table. These were empty stubs.
+extern "C" void gfx_ps3_register_blended_texture(const char* name, uint8_t* mask, uint8_t* replacement) {
+    if (name == nullptr) return;
+    Fast::mInstance.lock().get()->RegisterBlendedTexture(name, mask, replacement);
+}
+extern "C" void gfx_ps3_unregister_blended_texture(const char* name) {
+    if (name == nullptr) return;
+    Fast::mInstance.lock().get()->UnregisterBlendedTexture(name);
+}
+extern "C" void gfx_ps3_texture_cache_delete(const uint8_t* texAddr) {
+    if (texAddr == nullptr) return;
+    Fast::mInstance.lock().get()->TextureCacheDelete(texAddr);
+}
+#endif
 
 extern "C" int gfx_create_framebuffer(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height,
                                       uint8_t resize, bool forceFixedAspect) {

@@ -273,7 +273,7 @@ if ! strings "$SOURCE_ELF" | grep -F 'play-init: before Message_Init' >/dev/null
     echo 'STOP: native ELF lacks detailed Play initialization probes; refusing stale ELF.'
     exit 2
 fi
-if ! strings "$SOURCE_ELF" | grep -F 'cutscene-conditional: PS3 diagnostic skips uninitialized hook' >/dev/null ||
+if ! strings "$SOURCE_ELF" | grep -F 'cutscene-conditional: before entrance checks' >/dev/null ||
    ! strings "$SOURCE_ELF" | grep -F 'cutscene-entrance: first-visit cutscenes enabled' >/dev/null; then
     echo 'STOP: native ELF lacks the fresh cutscene conditional probe; refusing stale ELF.'
     exit 2

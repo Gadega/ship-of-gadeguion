@@ -434,8 +434,38 @@ unsigned int oot_ps3_pacing_vblank(void) {
     static unsigned int sFirst = 0;
     static unsigned long long sProbeStart = 0;
     const unsigned int v = oot_ps3_vblank_count();
-    if (sState == 1) return v;
     const unsigned long long now = oot_ps3_microseconds_now();
+    if (sState == 1) {
+        // Live vblanks, but they stop while the display is gone (HDMI unplugged, TV
+        // re-detecting): after 100 ms without one, count on a 59.94 Hz clock so pacing
+        // never waits for a vblank that won't come; real vblanks take over again.
+        static unsigned int sLastV = 0, sOut = 0;
+        static unsigned long long sLastTick = 0;
+        static bool sStalled = false;
+        if (sLastTick == 0) {
+            sLastV = v;
+            sOut = v;
+            sLastTick = now;
+        }
+        if (v != sLastV) {
+            sOut += v - sLastV;
+            sLastV = v;
+            sLastTick = now;
+            if (sStalled) {
+                sStalled = false;
+                oot_ps3_early_trace("graph: Play pacing: display vblanks back");
+            }
+        } else if (now - sLastTick > 100000ULL) {
+            if (!sStalled) {
+                sStalled = true;
+                oot_ps3_early_trace("graph: Play pacing: no vblank for 100 ms (display off?), using a timer");
+            }
+            const unsigned int ticks = static_cast<unsigned int>((now - sLastTick) / 16683ULL);
+            sOut += ticks;
+            sLastTick += static_cast<unsigned long long>(ticks) * 16683ULL;
+        }
+        return sOut;
+    }
     if (sState == 0) {
         if (sProbeStart == 0) {
             sProbeStart = now;
@@ -981,9 +1011,27 @@ void SaveManager_ThreadPoolWait(void) {}
 void GfxDebuggerDebugDisplayList(void*) {}
 bool GfxDebuggerIsDebugging(void) { return false; }
 bool GfxDebuggerIsDebuggingRequested(void) { return false; }
-void Gfx_RegisterBlendedTexture(const char*, u8*, u8*) {}
-void Gfx_UnregisterBlendedTexture(const char*) {}
-void Gfx_TextureCacheDelete(const uint8_t*) {}
+void gfx_ps3_register_blended_texture(const char* name, uint8_t* mask, uint8_t* replacement); // interpreter.cpp
+void gfx_ps3_unregister_blended_texture(const char* name);
+void gfx_ps3_texture_cache_delete(const uint8_t* texAddr);
+// Fast3D's masked-texture table (dungeon map room highlight). The render thread may be
+// drawing the previous update, so it finishes first (both touch the interpreter's tables).
+void Gfx_RegisterBlendedTexture(const char* name, u8* mask, u8* replacement) {
+    oot_ps3_render_sync();
+    gfx_ps3_register_blended_texture(name, mask, replacement);
+}
+void Gfx_UnregisterBlendedTexture(const char* name) {
+    oot_ps3_render_sync();
+    gfx_ps3_unregister_blended_texture(name);
+}
+void Gfx_TextureCacheDelete(const uint8_t* texAddr) {
+    if (texAddr == nullptr) return;
+    if (ResourceMgr_OTRSigCheck((char*)texAddr)) {
+        texAddr = (const uint8_t*)ResourceMgr_GetResourceDataByNameHandlingMQ((const char*)texAddr);
+    }
+    oot_ps3_render_sync();
+    gfx_ps3_texture_cache_delete(texAddr);
+}
 
 extern "C" void oot_ps3_pad_rumble(int on); // shipwright_os_ps3.c (DualShock 3 motor)
 void OTRControllerCallback(uint8_t rumble) {

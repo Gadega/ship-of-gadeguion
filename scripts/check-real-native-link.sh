@@ -433,7 +433,7 @@ fi
     echo 'BLOCKED compiling z_vr_box_draw.c'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/game-z-vr-box-draw.log"; exit 3; }
 if ! strings "$OUT/objects/game-state-init.o" | grep -F 'game-init: before graphics queue send' >/dev/null ||
    ! strings "$OUT/objects/game-play-init.o" | grep -F 'play-init: entrance lookup completed' >/dev/null ||
-   ! strings "$OUT/objects/game-cutscene-conditional.o" | grep -F 'cutscene-conditional: PS3 diagnostic skips uninitialized hook' >/dev/null ||
+   ! strings "$OUT/objects/game-cutscene-conditional.o" | grep -F 'cutscene-conditional: before entrance checks' >/dev/null ||
    ! strings "$OUT/objects/game-cutscene-conditional.o" | grep -F 'cutscene-entrance: first-visit cutscenes enabled' >/dev/null ||
    ! strings "$OUT/objects/game-message-init.o" | grep -F 'message-init: NTSC font table unavailable; diagnostic skip' >/dev/null ||
    ! strings "$OUT/objects/game-message-init.o" | grep -F 'interface-init: before parameter DMA' >/dev/null ||
@@ -798,6 +798,8 @@ echo 'Instrumented Graph_ThreadEntry object verified in final ELF'
 echo 'Instrumented Title_Draw object verified in final ELF'
 echo 'Instrumented Graph_ProcessGfxCommands object verified in final ELF'
 echo "Final constructor table size: $(wc -c < "$OUT/final-ctors.bin") bytes"
+python3 "$ROOT/scripts/patch-data-range.py" "$OUT/oot-native.elf" "$OUT/oot-native.map" || {
+    echo 'FINAL LINK: BLOCKED (save-state data range patch failed)'; exit 5; }
 echo 'FINAL LINK: OK'
 echo "ELF size: $(wc -c < "$OUT/oot-native.elf") bytes"
 echo 'This is the first linked native game executable; SELF/PKG packaging is next.'

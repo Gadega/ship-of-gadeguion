@@ -1083,7 +1083,20 @@ static void RunFrame() {
                     gSaveContext.linkAge = ps3Play->linkAgeOnLoad;
                 }
             }
-            GraphPs3Trace("graph: release Play arena (Play_Destroy skipped on PS3); enter next state");
+            {
+                /* The rest of Play_Destroy that matters (same order as SoH, after the age
+                 * swap above): every actor's Destroy function runs (statics like Object_Kankyo's
+                 * "fairies spawned", lights, actor sounds) and func_80031C3C also calls
+                 * Play_SaveSceneFlags: without it the area's chests, switches, collected Heart
+                 * Pieces and cleared rooms were forgotten on leaving unless saved there. */
+                PlayState* ps3Play = (PlayState*)gGameState;
+                func_80031C3C(&ps3Play->actorCtx, ps3Play);
+                Effect_DeleteAll(ps3Play);
+                EffectSs_ClearAll(ps3Play);
+                CollisionCheck_DestroyContext(ps3Play, &ps3Play->colChkCtx);
+                GraphPs3Trace("graph: Play cleanup done (actors destroyed, scene flags saved)");
+            }
+            GraphPs3Trace("graph: release Play arena (rest of Play_Destroy skipped on PS3); enter next state");
             GraphPs3ReleaseStateArena(gGameState);
             gGameState = NULL;
             continue;

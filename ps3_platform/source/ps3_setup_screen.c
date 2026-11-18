@@ -194,6 +194,7 @@ typedef struct {
     int ok;
     char error[96];
     char version[64];
+    char soh[24]; /* Ship of Harkinian version that made the archive ("" = unknown) */
     uint32_t crc;
     uint32_t entries;
 } ArchiveInfo;
@@ -250,6 +251,29 @@ static void CheckArchive(const char* path, ArchiveInfo* info) {
             ZipClose(&zip);
             return;
         }
+    }
+    /* Only Ship of Harkinian 9.2.x archives work: newer ones (9.3+) changed resource
+     * formats (very slow loading, freezes, or a crash at boot). portVersion = endianness
+     * byte then u16 major, minor, patch. */
+    record = ZipFind(&zip, "portVersion", 0, NULL);
+    if (record != NULL) {
+        uint32_t size = 0;
+        uint8_t* data = ZipRead(&zip, record, &size);
+        if (data != NULL && size >= 7) {
+            const int be = data[0] == 1;
+            const unsigned major = be ? (unsigned)(data[1] << 8 | data[2]) : (unsigned)(data[2] << 8 | data[1]);
+            const unsigned minor = be ? (unsigned)(data[3] << 8 | data[4]) : (unsigned)(data[4] << 8 | data[3]);
+            const unsigned patch = be ? (unsigned)(data[5] << 8 | data[6]) : (unsigned)(data[6] << 8 | data[5]);
+            snprintf(info->soh, sizeof(info->soh), "%u.%u.%u", major, minor, patch);
+            if (major != 9 || minor != 2) {
+                snprintf(info->error, sizeof(info->error),
+                         "Made by Ship of Harkinian %u.%u.%u: only 9.2.x works (use 9.2.3).", major, minor, patch);
+                free(data);
+                ZipClose(&zip);
+                return;
+            }
+        }
+        free(data);
     }
     ZipClose(&zip);
     info->ok = 1;
@@ -452,9 +476,9 @@ static int BuildIcon(const char* o2rPath) {
 
 /* ===================================================================== screen */
 typedef struct {
-    int state, installed, drives, usb;
+    int state, installed, drives, usb, installedBad;
     double progress;
-    char name[64], version[64], message[96], error[96];
+    char name[64], version[64], message[96], error[96], installedError[96];
 } ScreenInfo;
 
 static void Draw(const ScreenInfo* si);
@@ -638,7 +662,12 @@ static void Draw(const ScreenInfo* si) {
     ps3ui_rect(cardX, cardY, cardW, 4, 0x5FA8E8FF);
     switch (si->state) {
         case ST_SEARCH:
-            if (si->installed) {
+            if (si->installedBad) {
+                ps3ui_text_centered(cx, cardY + 60, 44, C_BAD, 1, "The installed game file can't be used");
+                ps3ui_text_centered(cx, cardY + 140, 30, C_DIM, 0, si->installedError);
+                ps3ui_text_centered(cx, cardY + 186, 30, C_DIM, 0,
+                                    "Plug in a USB drive with an oot.o2r made by Ship of Harkinian 9.2.3.");
+            } else if (si->installed) {
                 ps3ui_text_centered(cx, cardY + 60, 44, C_GOOD, 1, "The game is installed");
                 ps3ui_text_centered(cx, cardY + 140, 30, C_DIM, 0, "To replace it, plug in a USB drive with another .o2r file.");
                 button = "Start the game";
@@ -700,7 +729,9 @@ static void Draw(const ScreenInfo* si) {
 }
 
 void oot_ps3_setup_screen(void) {
-    const int installed = FileSize(GAME_O2R) > 0;
+    int installed = FileSize(GAME_O2R) > 0;
+    int installedBad = 0;
+    char installedError[96] = "";
     int state = ST_SEARCH, frame = 0, drives = 0;
     unsigned int prev = 0;
     Source source;
@@ -713,10 +744,18 @@ void oot_ps3_setup_screen(void) {
     if (installed) {
         ArchiveInfo game;
         CheckArchive(GAME_O2R, &game);
-        Trace("trace: game file oot.o2r: %s (%u entries)%s%s", game.ok ? game.version : "NOT USABLE", game.entries,
+        Trace("trace: game file oot.o2r: %s (%u entries, Ship of Harkinian %s)%s%s",
+              game.ok ? game.version : "NOT USABLE", game.entries, game.soh[0] ? game.soh : "?",
               game.ok ? "" : " - ", game.ok ? "" : game.error);
-        RefreshIconIfReplaced();
-        if (!TriangleHeldAtBoot()) return;
+        if (game.ok) {
+            RefreshIconIfReplaced();
+            if (!TriangleHeldAtBoot()) return;
+        } else {
+            /* Booting an unusable archive crashes or misbehaves: explain and offer a new one. */
+            installed = 0;
+            installedBad = 1;
+            snprintf(installedError, sizeof(installedError), "%s", game.error);
+        }
     }
     Trace("trace: setup screen opened (game file %s)", installed ? "installed" : "missing");
     memset(&source, 0, sizeof(source));
@@ -778,6 +817,8 @@ void oot_ps3_setup_screen(void) {
                                   info.version, icon ? "written" : "FAILED");
                         }
                         state = ST_DONE;
+                        installed = 1;
+                        installedBad = 0;
                     }
                 }
             }
@@ -822,6 +863,8 @@ void oot_ps3_setup_screen(void) {
         memset(&si, 0, sizeof(si));
         si.state = state;
         si.installed = installed;
+        si.installedBad = installedBad;
+        snprintf(si.installedError, sizeof(si.installedError), "%s", installedError);
         si.drives = drives;
         si.usb = source.usb;
         si.progress = source.size > 0 ? (double)copied / (double)source.size : 0.0;

@@ -61,10 +61,31 @@ static void VideoProbeWatchdog(void* argument) {
     unsigned int lastTraceCount = oot_ps3_trace_count();
     unsigned int stalledSeconds = 0;   // no frame and no trace call
     unsigned int noFrameSeconds = 0;   // no frame (scene loads trace but present nothing)
+    int lastDisplay = 0;
     for (;;) {
         usleep(1000000U);
         const unsigned int now = sFramesPresented;
         const unsigned int traceCount = oot_ps3_trace_count();
+        /* HDMI unplugged or the TV re-detecting: no vblanks, so no frames. That is not a
+         * freeze; wait for the display instead of closing the game. */
+        {
+            extern int oot_ps3_display_state(void); /* rsx_screen.c */
+            const int display = oot_ps3_display_state();
+            if (display != lastDisplay) {
+                char line[96];
+                snprintf(line, sizeof(line), "rsx-watchdog: display state %d -> %d%s", lastDisplay, display,
+                         display == 0 ? " (back)" : " (display off: waiting for it)");
+                oot_ps3_early_trace(line);
+                lastDisplay = display;
+            }
+            if (display > 0) {
+                lastSeen = now;
+                lastTraceCount = traceCount;
+                stalledSeconds = 0;
+                noFrameSeconds = 0;
+                continue;
+            }
+        }
         if (now != lastSeen) {
             lastSeen = now;
             lastTraceCount = traceCount;
@@ -101,6 +122,13 @@ static void VideoProbeWatchdog(void* argument) {
             oot_ps3_trace_thread_steps(steps, sizeof(steps));
             snprintf(big, sizeof(big), "rsx-watchdog: last step per thread: %s", steps);
             oot_ps3_early_trace(big);
+        }
+        {
+            extern void oot_ps3_actor_watch_info(char* out, unsigned int size); /* z_actor.c */
+            char actorInfo[200];
+            oot_ps3_actor_watch_info(actorInfo, sizeof(actorInfo));
+            snprintf(line, sizeof(line), "rsx-watchdog: game thread %s", actorInfo);
+            oot_ps3_early_trace(line);
         }
     }
     oot_ps3_heap_check(8, 1);

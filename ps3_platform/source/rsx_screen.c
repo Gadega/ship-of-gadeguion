@@ -28,6 +28,14 @@ static void Ps3VBlankHandler(const u32 head) {
     (void)head;
     ++sPs3VBlanks;
 }
+/* Video output state (videoGetState): 0 = enabled, other values = the display is off or
+ * being re-detected (HDMI unplugged / renegotiating), -1 = query failed. */
+int oot_ps3_display_state(void) {
+    videoState state;
+    if (videoGetState(0, 0, &state) != 0) return -1;
+    return (int)state.state;
+}
+
 unsigned int oot_ps3_vblank_count(void) { return sPs3VBlanks; }
 
 /* Frame pacing as the TV sees it: the flip handler runs when a new frame is actually

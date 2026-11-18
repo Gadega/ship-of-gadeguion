@@ -2314,14 +2314,6 @@ void Cutscene_HandleConditionalTriggers(PlayState* play) {
                 gSaveContext.entranceIndex, gSaveContext.cutsceneIndex);
     CUTSCENE_PS3_TRACE("cutscene-conditional: before GameInteractor_Should");
 
-#ifdef __PS3__
-    // The diagnostic executable disables upstream C++ constructor tables;
-    // GameInteractor_Should currently blocks before Play_Init can finish.
-    // Defer optional entrance cutscene rules until the hook is initialized.
-    CUTSCENE_PS3_TRACE("cutscene-conditional: PS3 diagnostic skips uninitialized hook");
-    return;
-#endif
-
     if (!GameInteractor_Should(VB_PLAY_TRANSITION_CS, true)) {
         CUTSCENE_PS3_TRACE("cutscene-conditional: vetoed");
         return;

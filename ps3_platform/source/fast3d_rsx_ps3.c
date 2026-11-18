@@ -1036,8 +1036,51 @@ const uint32_t* oot_ps3_rsx_capture_frame(uint32_t* width, uint32_t* height) {
     return oot_ps3_shipwright_video_target_pixels(width, height);
 }
 
+/* Swizzled textures: the RSX texture cache works on swizzled (Morton order) layouts;
+ * linear (LIN) textures miss it constantly on big or minified surfaces (Deku Tree
+ * basement: RSX-bound at 1080p). Power-of-two textures (nearly all N64 ones) are
+ * uploaded swizzled; others stay linear. Same picture, no mipmaps.
+ * Layout as RPCS3 convert_linear_swizzle: x bits on even positions (bit 0 = x LSB),
+ * y bits on odd ones; the larger side's extra bits go above.
+ * USRDIR/tex_linear = old linear uploads. */
+static int sSwizzleMode = -1; /* -1 unknown, 0 off, 1 on */
+static uint32_t sSwizzleBuf[512 * 1024];
+static inline int Ps3IsPow2(uint32_t v) { return v != 0 && (v & (v - 1)) == 0; }
+static uint32_t Ps3Log2(uint32_t v) { uint32_t n = 0; while ((1U << n) < v) ++n; return n; }
+static int Ps3SwizzleOn(void) {
+    if (sSwizzleMode < 0) {
+        FILE* off = fopen("/dev_hdd0/game/OOTP30048/USRDIR/tex_linear", "rb");
+        sSwizzleMode = off == NULL;
+        if (off) fclose(off);
+        oot_ps3_early_trace(sSwizzleMode ? "graph: Play rsx textures: swizzled uploads (power-of-two sizes)"
+                                         : "graph: Play rsx textures: linear uploads (USRDIR/tex_linear)");
+    }
+    return sSwizzleMode;
+}
+static void Ps3Swizzle(const uint32_t* src, uint32_t* dst, uint32_t width, uint32_t height) {
+    static uint32_t ox[1024], oy[1024];
+    const uint32_t lw = Ps3Log2(width), lh = Ps3Log2(height);
+    for (uint32_t pass = 0; pass < 2; ++pass) {
+        const uint32_t n = pass == 0 ? width : height;
+        for (uint32_t i = 0; i < n; ++i) {
+            uint32_t x = pass == 0 ? i : 0, y = pass == 0 ? 0 : i, bw = lw, bh = lh, off = 0, shift = 0;
+            while (bw | bh) {
+                if (bw) { off |= (x & 1U) << shift; x >>= 1; ++shift; --bw; }
+                if (bh) { off |= (y & 1U) << shift; y >>= 1; ++shift; --bh; }
+            }
+            (pass == 0 ? ox : oy)[i] = off;
+        }
+    }
+    for (uint32_t y = 0; y < height; ++y) {
+        const uint32_t* row = src + y * width;
+        const uint32_t base = oy[y];
+        for (uint32_t x = 0; x < width; ++x) dst[base | ox[x]] = row[x];
+    }
+}
+
 static int Ps3UploadRgba(GpuTexture* t, const uint8_t* rgba, uint32_t width, uint32_t height) {
     uint32_t bytes;
+    const int swizzled = Ps3IsPow2(width) && Ps3IsPow2(height) && width * height <= 512U * 1024U && Ps3SwizzleOn();
     bytes = width * height * 4;
     /* Overwrite in place only when no unfinished GPU work samples this texture;
      * otherwise upload into fresh memory and free the old copy after its fence. */
@@ -1059,9 +1102,16 @@ static int Ps3UploadRgba(GpuTexture* t, const uint8_t* rgba, uint32_t width, uin
     // raw RGBA in an A8R8G8B8 texture into correct channels (same scheme as the
     // working SM64 PS3 port). Reordering here as well rotated every channel,
     // putting alpha into red.
-    memcpy(t->pixels, rgba, bytes);
+    if (swizzled) {
+        /* swizzle in main memory, then one sequential copy (scattered writes to RSX
+         * memory are very slow from the PPU) */
+        Ps3Swizzle((const uint32_t*)(const void*)rgba, sSwizzleBuf, width, height);
+        memcpy(t->pixels, sSwizzleBuf, bytes);
+    } else {
+        memcpy(t->pixels, rgba, bytes);
+    }
     memset(&t->image, 0, sizeof(t->image));
-    t->image.format = GCM_TEXTURE_FORMAT_A8R8G8B8 | GCM_TEXTURE_FORMAT_LIN;
+    t->image.format = GCM_TEXTURE_FORMAT_A8R8G8B8 | (swizzled ? GCM_TEXTURE_FORMAT_SWZ : GCM_TEXTURE_FORMAT_LIN);
     t->image.mipmap = 1;
     t->image.dimension = GCM_TEXTURE_DIMS_2D;
     t->image.location = GCM_LOCATION_RSX;
@@ -1076,7 +1126,7 @@ static int Ps3UploadRgba(GpuTexture* t, const uint8_t* rgba, uint32_t width, uin
                      (GCM_TEXTURE_REMAP_COLOR_A << GCM_TEXTURE_REMAP_COLOR_R_SHIFT);
     t->image.width = width;
     t->image.height = height;
-    t->image.pitch = width * 4;
+    t->image.pitch = swizzled ? 0 : width * 4;
     if (rsxAddressToOffset(t->pixels, &t->image.offset)) return 0;
     rsxInvalidateTextureCache(ctx, GCM_INVALIDATE_TEXTURE);
     return 1;
