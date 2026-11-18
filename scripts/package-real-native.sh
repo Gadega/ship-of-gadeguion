@@ -145,8 +145,7 @@ if ! strings "$SOURCE_ELF" | grep -F 'player-item-action: PS3 diagnostic uses de
     echo 'STOP: native ELF lacks the constructor-safe player item-action path; refusing stale ELF.'
     exit 2
 fi
-if ! strings "$SOURCE_ELF" | grep -F 'player-init-common: before Actor_ProcessInitChain' >/dev/null ||
-   ! strings "$SOURCE_ELF" | grep -F 'player-init-audio: PS3 diagnostic defers stop-SFX calls' >/dev/null; then
+if ! strings "$SOURCE_ELF" | grep -F 'player-init-common: before Actor_ProcessInitChain' >/dev/null; then
     echo 'STOP: native ELF lacks the current player-common audio probe; refusing stale ELF.'
     exit 2
 fi

@@ -38,6 +38,7 @@ int oot_ps3_debug_menu_allowed(void);              /* ps3_debug_overlay.c */
 void oot_ps3_debug_menu_set_allowed(int on);
 void oot_ps3_savestate_request(int load, int slot);     /* ps3_savestate.c */
 int oot_ps3_savestate_slot_used(int slot);
+void oot_ps3_savestate_clear_all(void);
 const char* oot_ps3_savestate_status(unsigned int* serial);
 
 enum { ITEM_RESUME, ITEM_SAVESTATE, ITEM_LOADSTATE, ITEM_MASTER, ITEM_MUSIC, ITEM_SFX, ITEM_RUMBLE, ITEM_DEBUG, ITEM_RESET, ITEM_QUIT, ITEM_COUNT };
@@ -160,6 +161,7 @@ int oot_ps3_game_menu_input(unsigned int buttons) {
                     if (!sConfirm) {
                         sConfirm = 1;
                     } else if (oot_ps3_debug_reset_to_title()) {
+                        oot_ps3_savestate_clear_all();
                         close = 1;
                     }
                     break;
@@ -243,6 +245,10 @@ void oot_ps3_game_menu_frame(unsigned int screenWidth, unsigned int screenHeight
             ps3ui_text_right(panelW - 34, y + 2, 26, 0xFFD25AFF, 0, "Press X again");
         }
         y += 64;
+        if (i == ITEM_SAVESTATE) {
+            ps3ui_text(left, y - 12, 22, 0xFF5A5AFF, 0, "(experimental)");
+            y += 22;
+        }
         if (i == ITEM_LOADSTATE || i == ITEM_SFX || i == ITEM_DEBUG) {
             ps3ui_rect(left, y - 12, panelW - left - 40, 1, 0x3A4C70FF);
             y += 14;
@@ -251,7 +257,7 @@ void oot_ps3_game_menu_frame(unsigned int screenWidth, unsigned int screenHeight
     if (sSel == ITEM_RESET) ps3ui_text(left, y + 10, 24, 0x9AAAC4FF, 0, "Back to the title screen (unsaved progress is lost).");
     if (sSel == ITEM_DEBUG) ps3ui_text(left, y + 10, 24, 0x9AAAC4FF, 0, "Warps, cutscenes, items, performance info.");
     if (sSel == ITEM_SAVESTATE || sSel == ITEM_LOADSTATE)
-        ps3ui_text(left, y + 10, 24, 0x9AAAC4FF, 0, "3 slots; kept until you quit the game.");
+        ps3ui_text(left, y + 10, 24, 0x9AAAC4FF, 0, "3 slots; cleared when you reset or quit the game.");
     ps3ui_text(left, 1080 - 104, 24, 0x9AAAC4FF, 0, "X  select     Left/Right  adjust     O  close");
     ps3ui_text(left, 1080 - 64, 22, 0x7888A4FF, 0, "Port made by Gadega");
     ps3ui_text_right(panelW - 34, 1080 - 64, 22, 0x7888A4FF, 0, "v" OOT_PS3_PORT_VERSION);

@@ -1739,12 +1739,8 @@ void Player_PlayVoiceSfx(Player* this, u16 sfxId) {
 }
 
 void func_808326F0(Player* this) {
-#ifdef __PS3__
-    // Audio_StopSfxById currently blocks during native player startup.
-    // These sound-effect stops can wait until the audio runtime is ready.
-    PLAYER_PS3_TRACE("player-init-audio: PS3 diagnostic defers stop-SFX calls");
-    (void)this;
-#else
+    /* PS3: was skipped while the sound banks were still zeroed (Audio_StopSfxById hung);
+     * audio works since 2026-10-03, so Link's voice clips are cut again as in SoH. */
     u16* entry = &D_8085361C[0];
     s32 i;
 
@@ -1752,7 +1748,6 @@ void func_808326F0(Player* this) {
         Audio_StopSfxById((u16)(*entry + this->ageProperties->unk_92));
         entry++;
     }
-#endif
 }
 
 u16 Player_ApplyFloorSfxOffset(Player* this, u16 sfxId) {
