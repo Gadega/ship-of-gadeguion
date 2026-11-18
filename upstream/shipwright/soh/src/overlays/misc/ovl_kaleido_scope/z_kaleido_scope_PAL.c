@@ -3956,6 +3956,15 @@ void KaleidoScope_Update(PlayState* play) {
         }
     }
     KALEIDO_PS3_STEP("kaleido: update begin");
+    /* KaleidoScope_UpdateCursorSize moves vertex 0 relative to itself. The update calls it
+     * on the cursor vertices the last draw allocated; with the render thread that buffer
+     * is still being drawn, so the drawn cursor got the offset twice (misaligned pause
+     * cursor). The update works on its own copy in this frame's pool instead. */
+    if (pauseCtx->cursorVtx != NULL) {
+        Vtx* ps3Cursor = Graph_Alloc(play->state.gfxCtx, 20 * sizeof(Vtx));
+        memcpy(ps3Cursor, pauseCtx->cursorVtx, 20 * sizeof(Vtx));
+        pauseCtx->cursorVtx = ps3Cursor;
+    }
 #endif
 
     if ((R_PAUSE_MENU_MODE >= 3) && (((pauseCtx->state >= 4) && (pauseCtx->state <= 7)) ||
