@@ -41,6 +41,8 @@ uint8_t* Texture::GetPointer() { return ImageData; }
 size_t Texture::GetPointerSize() { return ImageDataSize; }
 } // namespace Fast
 
+static unsigned int sPs3TextureCount;
+
 void* Ps3Fast3dResourceManager::GetResourceRawPointer(const char* path) const {
     return path ? ResourceGetDataByName(path) : nullptr;
 }
@@ -81,16 +83,22 @@ std::shared_ptr<Ship::IResource> Ps3Fast3dResourceManager::LoadResourceProcess(
     if (!initData) initData = std::make_shared<Ship::ResourceInitData>();
     initData->Path = path;
     auto texture = std::make_shared<Fast::Texture>(initData);
-    texture->mImageBuffer = std::make_shared<std::vector<char>>(bytes, bytes + size);
-    texture->ImageData = reinterpret_cast<uint8_t*>(texture->mImageBuffer->data());
+    // No copy: point at the bridge's own bytes (they stay loaded for the run). The copy
+    // doubled every texture in the 64 MB heap and was never freed (the ~1 hour crash).
+    // mImageBuffer stays non-null (empty) so ~Texture doesn't delete[] the bridge's data.
+    texture->mImageBuffer = std::make_shared<std::vector<char>>();
+    texture->ImageData = const_cast<uint8_t*>(bytes);
     texture->ImageDataSize = static_cast<uint32_t>(size);
     texture->Type = static_cast<Fast::TextureType>(ResourceGetTexTypeByName(name));
     texture->Flags = ResourceGetTexFlagsByName(name);
     texture->Width = width;
     texture->Height = height;
     sPs3TextureCache.emplace(path, texture);
+    ++sPs3TextureCount;
     return texture;
 }
+
+extern "C" unsigned int oot_ps3_fast3d_texture_count(void) { return sPs3TextureCount; }
 
 Ps3Fast3dResourceManager* Ps3ResourceManager() {
     static Ps3Fast3dResourceManager manager;

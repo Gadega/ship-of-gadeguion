@@ -36,6 +36,126 @@ extern "C" void* ResourceGetDataByName(const char* name);
 extern "C" unsigned long long oot_ps3_microseconds_now(void);
 extern "C" { int gOotPs3ResourceTimingEnabled = 0; }
 
+
+// ---- PS3 save-state relocation registry (ps3_reloc.h) ----
+// Every block the game can end up pointing at is recorded with a key that is the same
+// in every run (kind + name/hash + index), so a save state written in one run can be
+// loaded in another: the blocks are recreated by key and pointers moved to them.
+#include "ps3_reloc.h"
+extern "C" void oot_ps3_bridge_lock(void);   // ps3_early_entry.c (recursive)
+extern "C" void oot_ps3_bridge_unlock(void);
+namespace {
+struct RelocEntry {
+    uint8_t kind;
+    uint32_t index;
+    uint32_t extra;
+    uint64_t hash;
+    std::string name;
+    uintptr_t addr;
+    size_t size;
+};
+struct RelocFrame {
+    uint8_t kind;
+    uint32_t extra;
+    std::string name;
+    uint32_t next;
+};
+std::vector<RelocEntry>& RelocEntries() { static std::vector<RelocEntry> v; return v; }
+std::vector<RelocFrame>& RelocFrames() { static std::vector<RelocFrame> v; return v; }
+std::vector<uint32_t>& RelocSorted() { static std::vector<uint32_t> v; return v; }
+bool sRelocSortedStale = true;
+
+void RelocAddEntry(uint8_t kind, const std::string& name, uint64_t hash, uint32_t index, uint32_t extra,
+                   const void* ptr, size_t size) {
+    if (ptr == nullptr || size == 0) return;
+    oot_ps3_bridge_lock();
+    RelocEntries().push_back(RelocEntry{ kind, index, extra, hash, name, reinterpret_cast<uintptr_t>(ptr), size });
+    sRelocSortedStale = true;
+    oot_ps3_bridge_unlock();
+}
+// Composite objects built by converters (collision, cutscene, audio): the converter
+// calls RelocAdd for each allocation; the index is the allocation's order.
+void RelocBegin(uint8_t kind, const std::string& name, uint32_t extra = 0) {
+    RelocFrames().push_back(RelocFrame{ kind, extra, name, 0 });
+}
+void RelocAdd(const void* ptr, size_t size) {
+    if (RelocFrames().empty()) return;
+    RelocFrame& f = RelocFrames().back();
+    const uint32_t index = f.next++;
+    RelocAddEntry(f.kind, f.name, 0, index, f.extra, ptr, size);
+}
+void RelocEnd() {
+    if (!RelocFrames().empty()) RelocFrames().pop_back();
+}
+void RelocRemoveResource(uint64_t hash) {
+    oot_ps3_bridge_lock();
+    std::vector<RelocEntry>& v = RelocEntries();
+    v.erase(std::remove_if(v.begin(), v.end(),
+                           [hash](const RelocEntry& e) { return e.kind == PS3_RELOC_RES && e.hash == hash; }),
+            v.end());
+    sRelocSortedStale = true;
+    oot_ps3_bridge_unlock();
+}
+} // namespace
+
+extern "C" void oot_ps3_reloc_register(int kind, const char* name, unsigned int index, const void* ptr, size_t size) {
+    oot_ps3_bridge_lock();
+    bool found = false;
+    for (RelocEntry& e : RelocEntries()) {
+        if (e.kind == kind && e.index == index && e.name == name) {
+            e.addr = reinterpret_cast<uintptr_t>(ptr);
+            e.size = size;
+            found = true;
+            break;
+        }
+    }
+    if (!found) RelocAddEntry(static_cast<uint8_t>(kind), name, 0, index, 0, ptr, size);
+    sRelocSortedStale = true;
+    oot_ps3_bridge_unlock();
+}
+
+extern "C" void oot_ps3_reloc_begin_query(void) {
+    oot_ps3_bridge_lock();
+    if (!sRelocSortedStale) return;
+    std::vector<RelocEntry>& v = RelocEntries();
+    std::vector<uint32_t>& sorted = RelocSorted();
+    sorted.resize(v.size());
+    for (uint32_t i = 0; i < v.size(); ++i) sorted[i] = i;
+    std::sort(sorted.begin(), sorted.end(), [&v](uint32_t a, uint32_t b) { return v[a].addr < v[b].addr; });
+    sRelocSortedStale = false;
+}
+
+extern "C" int oot_ps3_reloc_find(uintptr_t value, Ps3RelocInfo* out) {
+    const std::vector<RelocEntry>& v = RelocEntries();
+    const std::vector<uint32_t>& sorted = RelocSorted();
+    // last entry starting at or below value
+    size_t lo = 0, hi = sorted.size();
+    while (lo < hi) {
+        const size_t mid = (lo + hi) / 2;
+        if (v[sorted[mid]].addr <= value) lo = mid + 1; else hi = mid;
+    }
+    // Ranges may nest (a string inside a container): pick the smallest one that holds it.
+    const RelocEntry* best = nullptr;
+    for (size_t k = lo, steps = 0; k > 0 && steps < 32; --k, ++steps) {
+        const RelocEntry& e = v[sorted[k - 1]];
+        if (value - e.addr < e.size && (best == nullptr || e.size < best->size)) best = &e;
+    }
+    if (best == nullptr) return 0;
+    if (out != nullptr) {
+        out->kind = best->kind;
+        out->index = best->index;
+        out->extra = best->extra;
+        out->hash = best->hash;
+        out->name = best->name.c_str();
+        out->addr = best->addr;
+        out->size = best->size;
+    }
+    return 1;
+}
+
+extern "C" void oot_ps3_reloc_end_query(void) { oot_ps3_bridge_unlock(); }
+// ---- end relocation registry ----
+
 // ---- PS3 title cutscene converter: mirrors SOH CutsceneFactory.cpp ----
 #include <cstring>
 #include <cstdlib>
@@ -206,6 +326,7 @@ static bool Ps3ConvertTitleCutscene(const unsigned char* data, size_t size, bool
         return false;
     }
     memcpy(words, w.data(), w.size() * sizeof(uint32_t));
+    RelocAdd(words, w.size() * sizeof(uint32_t));
     if (sPs3CutsceneWords != nullptr) free(sPs3CutsceneWords);
     sPs3CutsceneWords = words;
     sPs3CutsceneWordCount = w.size();
@@ -340,6 +461,13 @@ static bool Ps3ConvertCollision(const unsigned char* data, size_t size, bool big
     h->waterBoxes = water;
 
     if (!c.ok) return Ps3ColFail("truncated data", c);
+    RelocAdd(h, sizeof(CollisionHeader));
+    RelocAdd(vtx, (numVtx ? numVtx : 1) * sizeof(Vec3s));
+    RelocAdd(poly, (numPoly ? numPoly : 1) * sizeof(CollisionPoly));
+    RelocAdd(surf, (numSurf ? numSurf : 1) * sizeof(SurfaceType));
+    RelocAdd(cams, (numCam ? numCam : 1) * sizeof(CamData));
+    RelocAdd(camPos, (numCamPos > 0 ? numCamPos : 1) * sizeof(Vec3s));
+    RelocAdd(water, (numWater ? numWater : 1) * sizeof(WaterBox));
     sPs3CollisionHeader = h;
     char msg[240];
     snprintf(msg, sizeof(msg),
@@ -453,6 +581,16 @@ ResourceList& Resources() { return LazyObject<ResourceList>(); }
 // ResourceUnloadByName erases, so that marks the index stale and it is rebuilt.
 std::unordered_map<uint64_t, size_t>& ResourceIndex() { return LazyObject<std::unordered_map<uint64_t, size_t>>(); }
 bool sResourceIndexStale = false;
+// Save states: data block = index 0, display-list references = 1 + k.
+// Keyed by hash only (no name string: the 64 MB heap is nearly full). Textures too:
+// some actors keep a texture's data pointer (ResourceMgr_LoadTexByName).
+void RelocAddResource(const Resource& r) {
+    static const std::string noName;
+    RelocAddEntry(PS3_RELOC_RES, noName, r.hash, 0, 0, r.data.data(), r.data.size());
+    for (size_t k = 0; k < r.references.size(); ++k)
+        RelocAddEntry(PS3_RELOC_RES, noName, r.hash, static_cast<uint32_t>(1 + k), 0, r.references[k].data(),
+                      r.references[k].size());
+}
 VersionList& Versions() { return LazyObject<VersionList>(); }
 bool sInitialized = false;
 
@@ -1285,6 +1423,7 @@ Resource* LoadHash(uint64_t hash, const char* requestedName = nullptr) {
         if (titleProbe) oot_ps3_early_trace("resource: title texture decoded");
         resources.push_back(std::move(resource));
         resourceIndex[hash] = resources.size() - 1;
+        RelocAddResource(resources.back());
         return &resources.back();
     }
     if (titleProbe) oot_ps3_early_trace("resource: title texture entry lookup failed");
@@ -1313,6 +1452,7 @@ Resource* LoadHash(uint64_t hash, const char* requestedName = nullptr) {
         oot_ps3_early_trace("trace: built-in gEmptyTexture used (soh.o2r not installed)");
         resources.push_back(std::move(resource));
         resourceIndex[hash] = resources.size() - 1;
+        RelocAddResource(resources.back());
         return &resources.back();
     }
     // Report each missing resource once (first 64), so absent soh.o2r assets show up.
@@ -1577,6 +1717,8 @@ static MessageTableEntry* Ps3LoadMessageTable(const char* path, bool wideText, b
     table[count].segment = out;
     table[count].msgSize = 0;
     out[0] = out[1] = '\0';
+    RelocAddEntry(PS3_RELOC_MESSAGES, path, 0, 0, 0, table, sizeof(MessageTableEntry) * (count + 1));
+    RelocAddEntry(PS3_RELOC_MESSAGES, path, 0, 1, 0, text, textBytes + 2);
     char line[160];
     snprintf(line, sizeof(line), "trace: message table %s: %lu messages", path, static_cast<unsigned long>(count));
     oot_ps3_early_trace(line);
@@ -2011,11 +2153,43 @@ extern "C" size_t ResourceGetTexSizeByName(const char* name) { return ResourceGe
 extern "C" size_t ResourceGetTexSizeByCrc(uint64_t crc) { return ResourceGetSizeByCrc(crc); }
 extern "C" void ResourceLoadDirectory(const char* name) { (void)name; Initialize(); }
 extern "C" void ResourceLoadDirectoryAsync(const char* name) { ResourceLoadDirectory(name); }
+namespace { size_t LoadedScenesCount(); }
+// Memory report (graph: Play memory ...): loaded resources by type, biggest first.
+extern "C" void oot_ps3_bridge_memory_report(char* out, size_t outSize) {
+    BridgeLock lock;
+    struct TypeTotal { uint32_t type; unsigned count; unsigned long long bytes; };
+    TypeTotal totals[24] = {};
+    unsigned used = 0, count = 0;
+    unsigned long long bytes = 0;
+    for (const Resource& r : Resources()) {
+        unsigned long long b = r.data.capacity() + r.name.capacity() + sizeof(Resource);
+        for (const auto& ref : r.references) b += ref.capacity() + sizeof(ref);
+        ++count;
+        bytes += b;
+        unsigned i = 0;
+        while (i < used && totals[i].type != r.type) ++i;
+        if (i == used && used < 24) totals[used++].type = r.type;
+        if (i < used) { totals[i].count++; totals[i].bytes += b; }
+    }
+    std::sort(totals, totals + used, [](const TypeTotal& a, const TypeTotal& b) { return a.bytes > b.bytes; });
+    int n = snprintf(out, outSize, "resources=%u (%llu KB) scenes=%u:", count, bytes / 1024ULL,
+                     static_cast<unsigned>(LoadedScenesCount()));
+    for (unsigned i = 0; i < used && i < 6 && n > 0 && static_cast<size_t>(n) < outSize; ++i) {
+        char tag[5];
+        for (int k = 0; k < 4; ++k) {
+            const char c = static_cast<char>((totals[i].type >> (24 - 8 * k)) & 0xFF);
+            tag[k] = (c >= 0x20 && c < 0x7F) ? c : '?';
+        }
+        tag[4] = 0;
+        n += snprintf(out + n, outSize - n, " %s=%u/%lluKB", tag, totals[i].count, totals[i].bytes / 1024ULL);
+    }
+}
+
 extern "C" void ResourceDirtyDirectory(const char* name) { (void)name; }
 extern "C" void ResourceDirtyByName(const char* name) { (void)name; }
 extern "C" void ResourceDirtyByCrc(uint64_t crc) { (void)crc; }
-extern "C" void ResourceUnloadByName(const char* name) { BridgeLock lock; const uint64_t hash = ResourceGetCrcByName(name); ResourceList& r = Resources(); r.erase(std::remove_if(r.begin(), r.end(), [hash](const Resource& v) { return v.hash == hash; }), r.end()); sResourceIndexStale = true; }
-extern "C" void ResourceUnloadByCrc(uint64_t crc) { BridgeLock lock; ResourceList& r = Resources(); r.erase(std::remove_if(r.begin(), r.end(), [crc](const Resource& v) { return v.hash == crc; }), r.end()); }
+extern "C" void ResourceUnloadByName(const char* name) { BridgeLock lock; const uint64_t hash = ResourceGetCrcByName(name); RelocRemoveResource(hash); ResourceList& r = Resources(); r.erase(std::remove_if(r.begin(), r.end(), [hash](const Resource& v) { return v.hash == hash; }), r.end()); sResourceIndexStale = true; }
+extern "C" void ResourceUnloadByCrc(uint64_t crc) { BridgeLock lock; RelocRemoveResource(crc); ResourceList& r = Resources(); r.erase(std::remove_if(r.begin(), r.end(), [crc](const Resource& v) { return v.hash == crc; }), r.end()); }
 extern "C" void ResourceUnloadDirectory(const char* name) { (void)name; }
 extern "C" void ResourceClearCache(void) { BridgeLock lock; Resources().clear(); }
 extern "C" void ResourceGetGameVersions(uint32_t* versions, size_t capacity, size_t* count) { Initialize(); VersionList& v = Versions(); if (count) *count = v.size(); if (versions) for (size_t i = 0; i < std::min(capacity, v.size()); ++i) versions[i] = v[i]; }
@@ -2231,6 +2405,7 @@ std::vector<Ps3Scene*>& LoadedScenes() {
     static std::vector<Ps3Scene*> scenes;
     return scenes;
 }
+size_t LoadedScenesCount() { return LoadedScenes().size(); }
 
 void SceneTrace(const char* what, const std::string& detail) {
     char line[320];
@@ -2377,6 +2552,7 @@ bool ReadPathFile(const std::string& name, Ps3SceneCmd* cmd) {
 }
 
 Ps3Scene* LoadSceneResource(const std::string& name, unsigned depth);
+void RelocAddScene(Ps3Scene* scene, unsigned depth);
 
 bool ReadSceneCommand(Reader& r, Ps3SceneCmd* cmd, Ps3Scene* scene, unsigned depth) {
     switch (cmd->id) {
@@ -2537,10 +2713,44 @@ Ps3Scene* LoadSceneResource(const std::string& name, unsigned depth) {
         if (scene->cmds.back().id == 0x14) break;
     }
     LoadedScenes().push_back(scene);
+    RelocAddScene(scene, depth);
     char line[64];
     snprintf(line, sizeof(line), "decoded %lu commands:", static_cast<unsigned long>(scene->cmds.size()));
     SceneTrace(line, name);
     return scene;
+}
+
+// Save states: every block of a decoded scene/room, in a fixed order (see ps3_reloc.h).
+void RelocAddScene(Ps3Scene* scene, unsigned depth) {
+    uint32_t index = 0;
+    auto add = [&](const void* p, size_t size) {
+        RelocAddEntry(PS3_RELOC_SCENE, scene->name, 0, index++, depth, p, size);
+    };
+    auto addString = [&](const std::string& str) { add(str.c_str(), str.size() + 1); };
+    add(scene, sizeof(Ps3Scene));
+    add(scene->cmds.data(), scene->cmds.size() * sizeof(Ps3SceneCmd));
+    for (Ps3SceneCmd& cmd : scene->cmds) {
+        add(cmd.actors.data(), cmd.actors.size() * sizeof(ActorEntry));
+        add(cmd.entrances.data(), cmd.entrances.size() * sizeof(EntranceEntry));
+        add(cmd.shorts.data(), cmd.shorts.size() * sizeof(s16));
+        add(cmd.lights.data(), cmd.lights.size() * sizeof(LightInfo));
+        add(cmd.transitions.data(), cmd.transitions.size() * sizeof(TransitionActorEntry));
+        add(cmd.lightSettings.data(), cmd.lightSettings.size() * sizeof(EnvLightSettings));
+        add(cmd.rooms.data(), cmd.rooms.size() * sizeof(RomFile));
+        add(cmd.names.data(), cmd.names.size() * sizeof(std::string));
+        for (const std::string& n : cmd.names) addString(n);
+        add(cmd.paths.data(), cmd.paths.size() * sizeof(Path));
+        for (const std::vector<Vec3s>& points : cmd.pathPoints) add(points.data(), points.size() * sizeof(Vec3s));
+        addString(cmd.file);
+        Ps3Mesh* mesh = cmd.mesh;
+        add(mesh, mesh != nullptr ? sizeof(Ps3Mesh) : 0);
+        if (mesh != nullptr) {
+            add(mesh->normal.data(), mesh->normal.size() * sizeof(PolygonDlist));
+            add(mesh->sorted.data(), mesh->sorted.size() * sizeof(PolygonDlist2));
+            add(mesh->images.data(), mesh->images.size() * sizeof(BgImage));
+            for (const std::string& path : mesh->paths) addString(path);
+        }
+    }
 }
 
 // Converted cutscene scripts and collision headers, kept per resource name.
@@ -2555,7 +2765,9 @@ void* CutsceneWords(const std::string& name) {
     void* words = nullptr;
     uint32_t* saved = sPs3CutsceneWords; // keep the title script untouched
     sPs3CutsceneWords = nullptr;
+    RelocBegin(PS3_RELOC_CUTSCENE, name);
     if (Ps3ConvertTitleCutscene(bytes.data(), bytes.size(), resource->bigEndian)) words = sPs3CutsceneWords;
+    RelocEnd();
     sPs3CutsceneWords = saved;
     converted.push_back({ name, words });
     return words;
@@ -2572,7 +2784,9 @@ CollisionHeader* CollisionFor(const std::string& name) {
     CollisionHeader* saved = sPs3CollisionHeader;
     sPs3CollisionHeader = nullptr;
     CollisionHeader* header = nullptr;
+    RelocBegin(PS3_RELOC_COLLISION, name);
     if (Ps3ConvertCollision(bytes.data(), bytes.size(), resource->bigEndian)) header = sPs3CollisionHeader;
+    RelocEnd();
     sPs3CollisionHeader = saved;
     converted.push_back({ name, header });
     return header;
@@ -2835,7 +3049,9 @@ SoundFontSample* Ps3AudioSample(const std::string& name) {
     bool big = false;
     if (Ps3AudioBytes(name, static_cast<uint32_t>(SOH::ResourceType::SOH_AudioSample), &bytes, &big)) {
         Ps3AudioCursor c{ bytes, 0, big, true };
+        RelocBegin(PS3_RELOC_AUDIO_SAMPLE, name);
         SoundFontSample* sample = new SoundFontSample();
+        RelocAdd(sample, sizeof(*sample));
         std::memset(sample, 0, sizeof(*sample));
         sample->codec = c.Byte();
         sample->medium = c.Byte();
@@ -2844,10 +3060,12 @@ SoundFontSample* Ps3AudioSample(const std::string& name) {
         sample->size = c.Word();
         if (c.Have(sample->size)) {
             sample->sampleAddr = new u8[sample->size ? sample->size : 1];
+            RelocAdd(sample->sampleAddr, sample->size ? sample->size : 1);
             std::memcpy(sample->sampleAddr, bytes.data() + c.off, sample->size);
             c.off += sample->size;
         }
         AdpcmLoop* loop = new AdpcmLoop();
+        RelocAdd(loop, sizeof(*loop));
         std::memset(loop, 0, sizeof(*loop));
         loop->start = c.Word();
         loop->loopEnd = c.Word();
@@ -2858,10 +3076,13 @@ SoundFontSample* Ps3AudioSample(const std::string& name) {
             if (i < 16) loop->predictorState[i] = value;
         }
         AdpcmBook* book = new AdpcmBook();
+        RelocAdd(book, sizeof(*book));
         book->order = static_cast<s32>(c.Word());
         book->npredictors = static_cast<s32>(c.Word());
         const uint32_t entries = c.Word();
         book->book = new s16[entries ? (entries < 0x10000 ? entries : 1) : 1];
+        RelocAdd(book->book, (entries ? (entries < 0x10000 ? entries : 1) : 1) * sizeof(s16));
+        RelocEnd();
         for (uint32_t i = 0; i < entries && i < 0x10000 && c.ok; ++i) book->book[i] = static_cast<s16>(c.Half());
         sample->loop = loop;
         sample->book = book;
@@ -2884,6 +3105,7 @@ AdsrEnvelope* Ps3AudioEnvelope(Ps3AudioCursor& c) {
         return nullptr;
     }
     AdsrEnvelope* envelope = new AdsrEnvelope[count ? count : 1];
+    RelocAdd(envelope, (count ? count : 1) * sizeof(AdsrEnvelope));
     for (uint32_t i = 0; i < count; ++i) {
         envelope[i].delay = static_cast<s16>(c.Half());
         envelope[i].arg = static_cast<s16>(c.Half());
@@ -2907,7 +3129,9 @@ SoundFont* Ps3AudioFont(const std::string& name) {
     bool big = false;
     if (Ps3AudioBytes(name, static_cast<uint32_t>(SOH::ResourceType::SOH_AudioSoundFont), &bytes, &big)) {
         Ps3AudioCursor c{ bytes, 0, big, true };
+        RelocBegin(PS3_RELOC_AUDIO_FONT, name);
         SoundFont* font = new SoundFont();
+        RelocAdd(font, sizeof(*font));
         std::memset(font, 0, sizeof(*font));
         font->fntIndex = static_cast<s32>(c.Word());
         (void)c.Byte(); // medium
@@ -2925,8 +3149,10 @@ SoundFont* Ps3AudioFont(const std::string& name) {
         font->numInstruments = static_cast<u8>(instruments);
         font->numSfx = static_cast<u16>(sfx);
         font->drums = new Drum*[drums ? drums : 1]();
+        RelocAdd(font->drums, (drums ? drums : 1) * sizeof(Drum*));
         for (uint32_t i = 0; i < drums && c.ok; ++i) {
             Drum* drum = new Drum();
+            RelocAdd(drum, sizeof(*drum));
             std::memset(drum, 0, sizeof(*drum));
             drum->releaseRate = c.Byte();
             drum->pan = c.Byte();
@@ -2937,8 +3163,10 @@ SoundFont* Ps3AudioFont(const std::string& name) {
             font->drums[i] = drum->sound.sample != nullptr ? drum : nullptr;
         }
         font->instruments = new Instrument*[instruments ? instruments : 1]();
+        RelocAdd(font->instruments, (instruments ? instruments : 1) * sizeof(Instrument*));
         for (uint32_t i = 0; i < instruments && c.ok; ++i) {
             Instrument* instrument = new Instrument();
+            RelocAdd(instrument, sizeof(*instrument));
             std::memset(instrument, 0, sizeof(*instrument));
             const uint8_t valid = c.Byte();
             (void)c.Byte();
@@ -2955,9 +3183,11 @@ SoundFont* Ps3AudioFont(const std::string& name) {
             font->instruments[i] = valid ? instrument : nullptr;
         }
         font->soundEffects = new SoundFontSound[sfx ? sfx : 1]();
+        RelocAdd(font->soundEffects, (sfx ? sfx : 1) * sizeof(SoundFontSound));
         for (uint32_t i = 0; i < sfx && c.ok; ++i) {
             if (c.Byte()) Ps3AudioSound(c, &font->soundEffects[i]);
         }
+        RelocEnd();
         if (c.ok) {
             result = font;
         } else {
@@ -2979,11 +3209,14 @@ SequenceData* Ps3AudioSeq(const std::string& name) {
     bool big = false;
     if (Ps3AudioBytes(name, static_cast<uint32_t>(SOH::ResourceType::SOH_AudioSequence), &bytes, &big)) {
         Ps3AudioCursor c{ bytes, 0, big, true };
+        RelocBegin(PS3_RELOC_AUDIO_SEQ, name);
         SequenceData* seq = new SequenceData();
+        RelocAdd(seq, sizeof(*seq));
         std::memset(seq, 0, sizeof(*seq));
         const uint32_t size = c.Word();
         if (c.Have(size)) {
             seq->seqData = new char[size ? size : 1];
+            RelocAdd(seq->seqData, size ? size : 1);
             std::memcpy(seq->seqData, bytes.data() + c.off, size);
             c.off += size;
             seq->seqDataSize = static_cast<int32_t>(size);
@@ -2993,6 +3226,7 @@ SequenceData* Ps3AudioSeq(const std::string& name) {
         seq->cachePolicy = c.Byte();
         seq->numFonts = static_cast<int32_t>(c.Word());
         for (int32_t i = 0; i < seq->numFonts && i < 16 && c.ok; ++i) seq->fonts[i] = c.Byte();
+        RelocEnd();
         if (c.ok && seq->seqData != nullptr) {
             result = seq;
         } else {
@@ -3016,6 +3250,30 @@ static SequenceData* Ps3AudioSeqForName(const char* path) {
     return path != nullptr ? Ps3AudioSeq(Normalize(path)) : nullptr;
 }
 // ---- end PS3 audio converters ----
+
+extern "C" int oot_ps3_reloc_resolve(int kind, const char* name, unsigned long long hash, unsigned int index,
+                                     unsigned int extra, uintptr_t* addr, size_t* size) {
+    const std::string n = name != nullptr ? name : "";
+    switch (kind) {
+        case PS3_RELOC_RES: LoadHash(hash, nullptr); break;
+        case PS3_RELOC_SCENE: LoadSceneResource(n, extra); break;
+        case PS3_RELOC_CUTSCENE: CutsceneWords(n); break;
+        case PS3_RELOC_COLLISION: CollisionFor(n); break;
+        case PS3_RELOC_AUDIO_SAMPLE: Ps3AudioSample(n); break;
+        case PS3_RELOC_AUDIO_FONT: Ps3AudioFont(n); break;
+        case PS3_RELOC_AUDIO_SEQ: Ps3AudioSeq(n); break;
+        default: break; // heaps, message tables: made at boot
+    }
+    BridgeLock lock;
+    for (const RelocEntry& e : RelocEntries()) {
+        if (e.kind != kind || e.index != index) continue;
+        if (kind == PS3_RELOC_RES ? e.hash != hash : e.name != n) continue;
+        if (addr != nullptr) *addr = e.addr;
+        if (size != nullptr) *size = e.size;
+        return 1;
+    }
+    return 0;
+}
 
 // OTRPlay_SpawnScene + OTRPlay_InitScene for every scene except the title intro.
 extern "C" void Play_InitEnvironment(PlayState* play, s16 skyboxId); // z_play.c

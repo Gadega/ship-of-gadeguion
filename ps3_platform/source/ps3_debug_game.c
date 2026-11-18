@@ -3,6 +3,7 @@
  * position text, warping to an area, and the "mark this moment" snapshot written to
  * the trace. Compiled with the game headers. */
 
+#include <malloc.h>
 #include "global.h"
 
 void oot_ps3_early_trace(const char* message);
@@ -57,7 +58,8 @@ const char* oot_ps3_debug_warp_name(int index) {
 void Sram_InitNewSave(void);                     /* z_sram.c */
 void Audio_SetGameVolume(int player_id, f32 volume); /* code_800E4FE0.c */
 
-enum { PS3_REQ_NONE, PS3_REQ_WARP, PS3_REQ_AGE, PS3_REQ_CUTSCENE, PS3_REQ_RESET };
+enum { PS3_REQ_NONE, PS3_REQ_WARP, PS3_REQ_AGE, PS3_REQ_CUTSCENE, PS3_REQ_RESET, PS3_REQ_STATE };
+void oot_ps3_savestate_prepare_warp(void); /* ps3_savestate.c: puts the saved file in place */
 static int sPs3Request, sPs3RequestEntrance, sPs3RequestFrames, sPs3RequestCutscene, sPs3RequestAge;
 static char sPs3RequestName[64];
 
@@ -118,6 +120,11 @@ static int Ps3QueueRequest(int type, int entrance, int cutscene, int age, const 
 int oot_ps3_debug_warp(int index) {
     if (index < 0 || index >= (int)ARRAY_COUNT(kPs3WarpList)) return 0;
     return Ps3QueueRequest(PS3_REQ_WARP, kPs3WarpList[index].entrance, -1, -1, kPs3WarpList[index].name);
+}
+
+/* Save state from another area: warp to its entrance with its file (ps3_savestate.c). */
+int oot_ps3_debug_warp_for_state(int entrance, int age) {
+    return Ps3QueueRequest(PS3_REQ_STATE, entrance, -1, age, "save state area");
 }
 
 int oot_ps3_debug_switch_age(void) {
@@ -195,7 +202,11 @@ static void Ps3ApplyOutsidePlay(PlayState* titlePlay) {
         sPs3Request = PS3_REQ_NONE;
         return;
     }
-    Ps3EnsureGameSave(NULL);
+    if (sPs3Request == PS3_REQ_STATE) {
+        oot_ps3_savestate_prepare_warp(); /* the saved file, age included */
+    } else {
+        Ps3EnsureGameSave(NULL);
+    }
     Ps3ClearSaveForWarp();
     Ps3SetAge(NULL, sPs3Request == PS3_REQ_CUTSCENE ? sPs3RequestAge : -1);
     /* the age is already applied: graph.c must not swap the equipment again */
@@ -238,6 +249,17 @@ static void Ps3ApplyRequest(PlayState* play) {
     }
     if (gSaveContext.gameMode != GAMEMODE_NORMAL) { /* title demo */
         Ps3ApplyOutsidePlay(play);
+        return;
+    }
+    if (sPs3Request == PS3_REQ_STATE) {
+        oot_ps3_savestate_prepare_warp();
+        Ps3ClearForWarp(play);
+        Ps3SetAge(play, sPs3RequestAge); /* same as the saved file's: no equipment swap */
+        Ps3StartTransition(play, (s16)sPs3RequestEntrance, 1);
+        snprintf(line, sizeof(line), "trace: save state warp to entrance %04X (age %d) from scene %d",
+                 (unsigned)(u16)sPs3RequestEntrance, sPs3RequestAge, (int)play->sceneNum);
+        oot_ps3_early_trace(line);
+        sPs3Request = PS3_REQ_NONE;
         return;
     }
     Ps3EnsureGameSave(play);
@@ -395,6 +417,30 @@ static void Ps3LogState(PlayState* play, const char* why) {
     oot_ps3_early_trace(line);
 }
 
+/* Memory report: heap high-water mark vs what malloc really has in use, free LV2 memory,
+ * and the resource bridge's loaded resources by type (to see what grows). */
+static void Ps3LogMemory(const char* why) {
+    extern unsigned int oot_ps3_heap_used_kb(void);
+    extern unsigned int oot_ps3_heap_size_kb(void);
+    extern unsigned int oot_ps3_heap_refusals(void);
+    extern unsigned int oot_ps3_system_free_kb(void);
+    extern unsigned int oot_ps3_system_total_kb(void);
+    extern unsigned int oot_ps3_system_free_at_start_kb(void);
+    extern unsigned int oot_ps3_fast3d_texture_count(void);
+    extern void oot_ps3_bridge_memory_report(char* out, size_t outSize);
+    char bridge[256];
+    char line[448];
+    struct mallinfo mi = mallinfo();
+    oot_ps3_bridge_memory_report(bridge, sizeof(bridge));
+    snprintf(line, sizeof(line),
+             "graph: Play memory (%s) heap=%u/%uKB inUse=%uKB refused=%u system free=%uKB (total %uKB, free at boot %uKB) "
+             "fast3dTex=%u %s",
+             why, oot_ps3_heap_used_kb(), oot_ps3_heap_size_kb(), (unsigned)(mi.uordblks / 1024),
+             oot_ps3_heap_refusals(), oot_ps3_system_free_kb(), oot_ps3_system_total_kb(),
+             oot_ps3_system_free_at_start_kb(), oot_ps3_fast3d_texture_count(), bridge);
+    oot_ps3_early_trace(line);
+}
+
 void oot_ps3_debug_game_tick(void) {
     static void* sLastPlay;
     static s16 sLastScene = -1;
@@ -413,8 +459,10 @@ void oot_ps3_debug_game_tick(void) {
         sLastScene = play->sceneNum;
         sUpdates = 0;
         Ps3LogState(play, "area start");
+        Ps3LogMemory("area start");
     } else if (sUpdates % 200U == 0U) { /* 200 updates = 10 s */
         Ps3LogState(play, "every 10 s");
+        if (sUpdates % 1200U == 0U) Ps3LogMemory("every 60 s");
     }
 }
 

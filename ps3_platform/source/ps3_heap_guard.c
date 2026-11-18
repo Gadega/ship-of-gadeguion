@@ -27,6 +27,7 @@
 
 void oot_ps3_early_trace(const char* message);
 unsigned int oot_ps3_heap_used_kb(void);
+unsigned int oot_ps3_heap_size_kb(void);
 unsigned int oot_ps3_heap_refusals(void);
 
 void* __real_malloc(size_t size);
@@ -329,8 +330,8 @@ void oot_ps3_heap_check(int maxReports, int fromWatchdog) {
     if (!OOT_PS3_HEAP_GUARD) {
         if (fromWatchdog) {
             char line[128];
-            snprintf(line, sizeof(line), "graph: Play heap used %u of 65536 KB, refused %u (heap guard off)",
-                     oot_ps3_heap_used_kb(), oot_ps3_heap_refusals());
+            snprintf(line, sizeof(line), "graph: Play heap used %u of %u KB, refused %u (heap guard off)",
+                     oot_ps3_heap_used_kb(), oot_ps3_heap_size_kb(), oot_ps3_heap_refusals());
             oot_ps3_early_trace(line);
         }
         return;
@@ -399,9 +400,9 @@ void oot_ps3_heap_check(int maxReports, int fromWatchdog) {
         char line[256];
         snprintf(line, sizeof(line),
                  "graph: Play heap-guard watchdog scan: %u live blocks, %u damaged, %u quarantined (%u KB)%s; "
-                 "heap used %u of 65536 KB, refused %u",
+                 "heap used %u of %u KB, refused %u",
                  sLive, reports, sQCount, sQBytes / 1024U, sTableFull ? " (table full: newest blocks untracked)" : "",
-                 oot_ps3_heap_used_kb(), oot_ps3_heap_refusals());
+                 oot_ps3_heap_used_kb(), oot_ps3_heap_size_kb(), oot_ps3_heap_refusals());
         oot_ps3_early_trace(line);
     } else {
         /* Memory use about every 50 s (called every 64 updates), and whenever sbrk refused. */
@@ -410,9 +411,9 @@ void oot_ps3_heap_check(int maxReports, int fromWatchdog) {
             char line[192];
             sLastRefusals = oot_ps3_heap_refusals();
             snprintf(line, sizeof(line),
-                     "graph: Play heap-guard memory: heap used %u of 65536 KB, refused %u, live blocks %u, "
+                     "graph: Play heap-guard memory: heap used %u of %u KB, refused %u, live blocks %u, "
                      "quarantined %u (%u KB)",
-                     oot_ps3_heap_used_kb(), sLastRefusals, sLive, sQCount, sQBytes / 1024U);
+                     oot_ps3_heap_used_kb(), oot_ps3_heap_size_kb(), sLastRefusals, sLive, sQCount, sQBytes / 1024U);
             oot_ps3_early_trace(line);
         }
     }

@@ -71,6 +71,7 @@ void oot_ps3_early_trace(const char* message);
 void oot_ps3_early_trace_flush_usb(void);
 unsigned long long oot_ps3_microseconds_now(void);
 unsigned int oot_ps3_heap_used_kb(void);
+unsigned int oot_ps3_heap_size_kb(void);
 int oot_ps3_trace_enabled(void);
 void oot_ps3_trace_set_enabled(int on);
 int oot_ps3_frame_mode(void);
@@ -239,7 +240,7 @@ static void PerfLines(int row) {
          sLogicUs / 1000.0, sDrawUs[0] / 1000.0, sDrawUs[1] / 1000.0, sDrawUs[2] / 1000.0, sSkippedSecond);
     info1[0] = info2[0] = '\0';
     oot_ps3_debug_game_info(info1, info2, sizeof(info1));
-    Line(row + 1, COL_VALUE, "heap %u/65536 KB  %s", oot_ps3_heap_used_kb(), info1);
+    Line(row + 1, COL_VALUE, "heap %u/%u KB  %s", oot_ps3_heap_used_kb(), oot_ps3_heap_size_kb(), info1);
     Line(row + 2, COL_VALUE, "%s", info2);
 }
 
