@@ -5,6 +5,13 @@
  */
 
 #include "z_en_river_sound.h"
+#ifdef __PS3__
+extern volatile int gPs3WatchStep;
+extern volatile long gPs3WatchData[4];
+#define RS_STEP(n) (gPs3WatchStep = (n))
+#else
+#define RS_STEP(n) ((void)0)
+#endif
 
 #define FLAGS (ACTOR_FLAG_UPDATE_CULLING_DISABLED | ACTOR_FLAG_DRAW_CULLING_DISABLED)
 
@@ -105,8 +112,16 @@ s32 EnRiverSound_GetSoundPos(Vec3s* points, s32 numPoints, Vec3f* hearPos, Vec3f
     f32 pointDist = 10000.0f;
     Vec3s* point;
 
+    RS_STEP(10);
+#ifdef __PS3__
+    gPs3WatchData[0] = (long)(uintptr_t)points;
+    gPs3WatchData[1] = numPoints;
+#endif
     for (i = 0; i < numPoints; i++) {
         f32 dist;
+#ifdef __PS3__
+        gPs3WatchData[2] = i;
+#endif
 
         vec.x = points[i].x;
         vec.y = points[i].y;
@@ -119,6 +134,7 @@ s32 EnRiverSound_GetSoundPos(Vec3s* points, s32 numPoints, Vec3f* hearPos, Vec3f
         }
     }
 
+    RS_STEP(11);
     if (pointDist >= 10000.0f) {
         return false;
     }
@@ -142,6 +158,7 @@ s32 EnRiverSound_GetSoundPos(Vec3s* points, s32 numPoints, Vec3f* hearPos, Vec3f
         sp78[1] = EnRiverSound_FindClosestPointOnLineSegment(&pointLoc, &vec, hearPos, &sp60);
     }
 
+    RS_STEP(12);
     if (sp78[0] && sp78[1]) {
         if (!EnRiverSound_FindClosestPointOnLineSegment(&sp54, &sp60, hearPos, soundPos)) {
             soundPos->x = (sp54.x + sp60.x) * 0.5f;
@@ -176,10 +193,19 @@ void EnRiverSound_Update(Actor* thisx, PlayState* play) {
         path = &play->setupPathList[this->pathIndex];
         pos = &thisx->world.pos;
 
+        RS_STEP(1);
+#ifdef __PS3__
+        gPs3WatchData[3] = this->pathIndex;
+#endif
         if (EnRiverSound_GetSoundPos(SEGMENTED_TO_VIRTUAL(path->points), path->count, &player->actor.world.pos, pos)) {
-            if (BgCheck_EntityRaycastFloor4(&play->colCtx, &thisx->floorPoly, &sp34, thisx, pos) != BGCHECK_Y_MIN) {
+            RS_STEP(2);
+            f32 ps3FloorY = BgCheck_EntityRaycastFloor4(&play->colCtx, &thisx->floorPoly, &sp34, thisx, pos);
+            RS_STEP(26);
+            if (ps3FloorY != BGCHECK_Y_MIN) {
+                RS_STEP(3);
                 // Get the sound volume pitch based on the speed of the river current under the actor
                 this->soundPitchIndex = SurfaceType_GetConveyorSpeed(&play->colCtx, thisx->floorPoly, sp34);
+                RS_STEP(4);
             } else {
                 this->soundPitchIndex = 0;
             }

@@ -30,6 +30,25 @@ extern unsigned long long oot_ps3_microseconds_now(void);
 // Per-actor-id update time, read and cleared by the Play profiler in z_play.c.
 unsigned long long gPs3ActorUpdateUs[ACTOR_ID_MAX];
 unsigned long long gPs3ActorDrawUs[ACTOR_ID_MAX];
+/* The actor being updated (1) or drawn (2) right now, for the freeze watchdog. */
+static Actor* volatile sPs3WatchActor;
+static volatile int sPs3WatchPhase;
+/* Step markers inside a callback under suspicion (watchdog prints them). */
+volatile int gPs3WatchStep;
+volatile long gPs3WatchData[4];
+void oot_ps3_actor_watch_info(char* out, unsigned int size) {
+    Actor* actor = sPs3WatchActor;
+    const int phase = sPs3WatchPhase;
+    if (actor == NULL || phase == 0) {
+        snprintf(out, size, "no actor callback running");
+        return;
+    }
+    snprintf(out, size, "inside %s of actor %04X (%s) params=%04X at (%.0f,%.0f,%.0f) ptr=%p step=%d data=%lx,%lx,%lx,%lx",
+             phase == 1 ? "update" : "draw", (unsigned)(u16)actor->id, ActorDB_Retrieve(actor->id)->name,
+             (unsigned)(u16)actor->params, (double)actor->world.pos.x, (double)actor->world.pos.y,
+             (double)actor->world.pos.z, (void*)actor, gPs3WatchStep, gPs3WatchData[0], gPs3WatchData[1],
+             gPs3WatchData[2], gPs3WatchData[3]);
+}
 #define ACTOR_PS3_TRACE(message) oot_ps3_early_trace(message)
 #else
 #define ACTOR_PS3_TRACE(message) ((void)0)
@@ -2814,7 +2833,11 @@ void Actor_UpdateAll(PlayState* play, ActorContext* actorCtx) {
                         {
                             const s16 ps3ActorId = actor->id;
                             const unsigned long long ps3T0 = oot_ps3_microseconds_now();
+                            sPs3WatchActor = actor;
+                            sPs3WatchPhase = 1;
+                            gPs3WatchStep = 0;
                             actor->update(actor, play);
+                            sPs3WatchPhase = 0;
                             if (ps3ActorId >= 0 && ps3ActorId < ACTOR_ID_MAX) {
                                 gPs3ActorUpdateUs[ps3ActorId] += oot_ps3_microseconds_now() - ps3T0;
                             }
@@ -3292,7 +3315,10 @@ void Actor_DrawAll(PlayState* play, ActorContext* actorCtx) {
                                  * trace lines here (two per actor per update were a measurable cost). */
                                 const s16 ps3ActorId = actor->id;
                                 const unsigned long long ps3T0 = oot_ps3_microseconds_now();
+                                sPs3WatchActor = actor;
+                                sPs3WatchPhase = 2;
                                 Actor_Draw(play, actor);
+                                sPs3WatchPhase = 0;
                                 if (ps3ActorId >= 0 && ps3ActorId < ACTOR_ID_MAX) {
                                     gPs3ActorDrawUs[ps3ActorId] += oot_ps3_microseconds_now() - ps3T0;
                                 }

@@ -1,4 +1,22 @@
 #include "global.h"
+
+#ifdef __PS3__
+/* Save-state hunt: a polygon node list that loops forever. Logs once per loop. */
+extern void oot_ps3_early_trace(const char* message);
+static void Ps3BgLoopBroken(int line) {
+    static int sReported[8];
+    static int sCount;
+    char text[96];
+    int i;
+    for (i = 0; i < sCount; i++)
+        if (sReported[i] == line) return;
+    if (sCount < 8) sReported[sCount++] = line;
+    snprintf(text, sizeof(text), "trace: bgcheck: node list loop broken (z_bgcheck.c line %d)", line);
+    oot_ps3_early_trace(text);
+}
+#else
+#define Ps3BgLoopBroken(line) ((void)0)
+#endif
 #include "vt.h"
 
 #include "soh/OTRGlobals.h"
@@ -487,7 +505,8 @@ void StaticLookup_AddPolyToSSList(CollisionContext* colCtx, SSList* ssList, Coll
         SSNodeList_SetSSListHead(&colCtx->polyNodes, ssList, &polyId);
         return;
     }
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(490); break; }
         // if at the end of the list
         if (curNode->next == SS_NULL) {
             newNodeId = SSNodeList_GetNextNodeIdx(&colCtx->polyNodes);
@@ -546,7 +565,8 @@ f32 BgCheck_RaycastFloorStaticList(CollisionContext* colCtx, u16 xpFlags, SSList
 
     curNode = &colCtx->polyNodes.tbl[ssList->head];
 
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(549); break; }
         polyId = curNode->polyId;
 
         if (COLPOLY_VIA_FLAG_TEST(colCtx->colHeader->polyList[polyId].flags_vIA, xpFlags) ||
@@ -693,7 +713,8 @@ s32 BgCheck_SphVsStaticWall(StaticLookup* lookup, CollisionContext* colCtx, u16 
     vtxList = colCtx->colHeader->vtxList;
     curNode = &colCtx->polyNodes.tbl[lookup->wall.head];
 
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(696); break; }
         polyId = curNode->polyId;
         curPoly = &polyList[polyId];
         if (pos->y < vtxList[COLPOLY_VTX_INDEX(curPoly->flags_vIA)].y &&
@@ -774,7 +795,8 @@ s32 BgCheck_SphVsStaticWall(StaticLookup* lookup, CollisionContext* colCtx, u16 
 
     curNode = &colCtx->polyNodes.tbl[lookup->wall.head];
 
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(777); break; }
         polyId = curNode->polyId;
         curPoly = &polyList[polyId];
         if (pos->y < vtxList[COLPOLY_VTX_INDEX(curPoly->flags_vIA)].y &&
@@ -885,7 +907,8 @@ s32 BgCheck_CheckStaticCeiling(StaticLookup* lookup, u16 xpFlags, CollisionConte
 
     *outY = pos->y;
 
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(888); break; }
         curPolyId = curNode->polyId;
         if (COLPOLY_VIA_FLAG_TEST(colCtx->colHeader->polyList[curPolyId].flags_vIA, xpFlags)) {
             if (curNode->next == SS_NULL) {
@@ -944,7 +967,8 @@ s32 BgCheck_CheckLineAgainstSSList(SSList* ssList, CollisionContext* colCtx, u16
     }
 
     curNode = &colCtx->polyNodes.tbl[ssList->head];
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(947); break; }
         polyId = curNode->polyId;
         checkedPoly = &colCtx->polyNodes.polyCheckTbl[polyId];
 
@@ -1032,7 +1056,8 @@ s32 BgCheck_SphVsFirstStaticPolyList(SSNode* node, u16 xpFlags, CollisionContext
     u16 nextId;
     s16 curPolyId;
 
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(1035); break; }
         curPolyId = node->polyId;
         curPoly = &polyList[curPolyId];
         if (COLPOLY_VIA_FLAG_TEST(colCtx->colHeader->polyList[curPolyId].flags_vIA, xpFlags)) {
@@ -1701,7 +1726,8 @@ f32 BgCheck_RaycastFloorImpl(PlayState* play, CollisionContext* colCtx, u16 xpFl
     yIntersect = BGCHECK_Y_MIN;
     checkPos = *pos;
 
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(1704); break; }
         if (checkPos.y < colCtx->minBounds.y) {
             break;
         }
@@ -1733,15 +1759,42 @@ f32 BgCheck_RaycastFloorImpl(PlayState* play, CollisionContext* colCtx, u16 xpFl
     dynaRaycast.resultPoly = outPoly;
     dynaRaycast.bgId = outBgId;
 
+#ifdef __PS3__
+    { extern volatile int gPs3WatchStep; if (gPs3WatchStep == 2) gPs3WatchStep = 21; }
+#endif
     yIntersectDyna = BgCheck_RaycastFloorDyna(&dynaRaycast);
+#ifdef __PS3__
+    { extern volatile int gPs3WatchStep; if (gPs3WatchStep == 21) gPs3WatchStep = 22; }
+#endif
 
     if (yIntersect < yIntersectDyna) {
         yIntersect = yIntersectDyna;
     }
 
+#ifdef __PS3__
+    {
+        extern volatile int gPs3WatchStep;
+        extern volatile long gPs3WatchData[4];
+        if (gPs3WatchStep == 22) {
+            CollisionHeader* h = BgCheck_GetCollisionHeader(colCtx, *outBgId);
+            gPs3WatchData[0] = (long)(uintptr_t)*outPoly;
+            gPs3WatchData[1] = *outBgId;
+            gPs3WatchData[2] = (long)(uintptr_t)h;
+            gPs3WatchData[3] = h != NULL ? (long)(uintptr_t)h->surfaceTypeList : -1;
+            gPs3WatchStep = 23;
+            if (*outPoly != NULL) {
+                gPs3WatchData[3] = (gPs3WatchData[3] & 0xFFFFFFFFL) | ((long)(*outPoly)->type << 32);
+                gPs3WatchStep = 24;
+            }
+        }
+    }
+#endif
     if (yIntersect != BGCHECK_Y_MIN && func_80041EC8(colCtx, *outPoly, *outBgId)) {
         yIntersect -= 1.0f;
     }
+#ifdef __PS3__
+    { extern volatile int gPs3WatchStep; if (gPs3WatchStep == 23 || gPs3WatchStep == 24) gPs3WatchStep = 25; }
+#endif
     return yIntersect;
 }
 
@@ -3048,7 +3101,8 @@ f32 BgCheck_RaycastFloorDynaList(DynaRaycast* dynaRaycast, u32 listType) {
     polyList = dynaRaycast->dyna->polyList;
     curNode = &dynaRaycast->dyna->polyNodes.tbl[dynaRaycast->ssList->head];
 
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(3051); break; }
         id = curNode->polyId;
         if (COLPOLY_VIA_FLAG_TEST(polyList[id].flags_vIA, dynaRaycast->xpFlags)) {
             if (curNode->next == SS_NULL) {
@@ -3245,7 +3299,8 @@ s32 BgCheck_SphVsDynaWallInBgActor(CollisionContext* colCtx, u16 xpFlags, DynaCo
     resultPos = *pos;
     curNode = &dyna->polyNodes.tbl[ssList->head];
 
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(3248); break; }
         polyId = curNode->polyId;
         poly = &dyna->polyList[polyId];
         CollisionPoly_GetNormalF(poly, &nx, &ny, &nz);
@@ -3318,7 +3373,8 @@ s32 BgCheck_SphVsDynaWallInBgActor(CollisionContext* colCtx, u16 xpFlags, DynaCo
     }
 
     curNode = &dyna->polyNodes.tbl[ssList->head];
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(3321); break; }
         polyId = curNode->polyId;
         poly = &dyna->polyList[polyId];
         CollisionPoly_GetNormalF(poly, &nx, &ny, &nz);
@@ -3479,7 +3535,8 @@ s32 BgCheck_CheckDynaCeilingList(CollisionContext* colCtx, u16 xpFlags, DynaColl
     curNode = &dyna->polyNodes.tbl[ssList->head];
     testPos = *pos;
 
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(3482); break; }
         polyId = curNode->polyId;
         poly = &dyna->polyList[polyId];
         if (COLPOLY_VIA_FLAG_TEST(poly->flags_vIA, xpFlags)) {
@@ -3579,7 +3636,8 @@ s32 BgCheck_CheckLineAgainstBgActorSSList(DynaLineTest* dynaLineTest) {
     curNode = &dynaLineTest->dyna->polyNodes.tbl[dynaLineTest->ssList->head];
     result = false;
 
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(3582); break; }
         polyId = curNode->polyId;
         curPoly = &dynaLineTest->dyna->polyList[polyId];
         if (COLPOLY_VIA_FLAG_TEST(curPoly->flags_vIA, dynaLineTest->xpFlags)) {
@@ -3712,7 +3770,8 @@ s32 BgCheck_SphVsFirstDynaPolyList(CollisionContext* colCtx, u16 xpFlags, Collis
     }
     dyna = &colCtx->dyna;
     curNode = &dyna->polyNodes.tbl[ssList->head];
-    while (true) {
+    for (s32 ps3Guard = 0;; ps3Guard++) {
+        if (ps3Guard > 200000) { Ps3BgLoopBroken(3715); break; }
         curPolyId = curNode->polyId;
         curPoly = &dyna->polyList[curPolyId];
         if (COLPOLY_VIA_FLAG_TEST(curPoly->flags_vIA, xpFlags)) {
@@ -4423,7 +4482,8 @@ void BgCheck_DrawDynaPolyList(PlayState* play, CollisionContext* colCtx, DynaCol
 
     if (ssList->head != SS_NULL) {
         curNode = &dyna->polyNodes.tbl[ssList->head];
-        while (true) {
+        for (s32 ps3Guard = 0;; ps3Guard++) {
+            if (ps3Guard > 200000) { Ps3BgLoopBroken(4426); break; }
             curPolyId = curNode->polyId;
             poly = &dyna->polyList[curPolyId];
             BgCheck_Vec3sToVec3f(COLPOLY_VTX_INDEX(poly->flags_vIA) + dyna->vtxList, &vA);
@@ -4525,7 +4585,8 @@ void BgCheck_DrawStaticPolyList(PlayState* play, CollisionContext* colCtx, SSLis
 
     if (ssList->head != SS_NULL) {
         curNode = &colCtx->polyNodes.tbl[ssList->head];
-        while (true) {
+        for (s32 ps3Guard = 0;; ps3Guard++) {
+            if (ps3Guard > 200000) { Ps3BgLoopBroken(4528); break; }
             curPolyId = curNode->polyId;
             BgCheck_DrawStaticPoly(play, colCtx, &polyList[curPolyId], r, g, b);
             if (curNode->next == SS_NULL) {
