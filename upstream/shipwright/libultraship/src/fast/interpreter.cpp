@@ -161,6 +161,11 @@ static bool sTnlFrame;
 static bool sPs3TriFast;
 static unsigned int sPs3TriFastHits, sPs3TriFullPath;
 static int sPs3TriFastEnabled = 1; // debug menu "Triangle fast path"
+// Fast3D's render state when the fast path was armed. A CPU-path triangle in between can
+// change depth/decal/shader/textures through the full setup without any state opcode;
+// the next GPU triangles then went into the old batch with the new live state (white
+// blocks: Link's house occluders drawn over the pre-rendered background).
+static RenderingState sPs3TriFastState;
 static F3DVtx sTnlRaw[MAX_VERTICES + 4];
 static int16_t sTnlVtxCtx[MAX_VERTICES + 4];
 static uint8_t sTnlVtxState[MAX_VERTICES + 4]; // 0 CPU-transformed, 1 raw (GPU), 2 raw + CPU copy made
@@ -2564,13 +2569,15 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
                         vtx3_idx < MAX_VERTICES && sTnlVtxState[vtx1_idx] != 0 && sTnlVtxState[vtx2_idx] != 0 &&
                         sTnlVtxState[vtx3_idx] != 0;
     if (!ps3Tnl) {
+        sPs3TriFast = false; // this triangle's setup may change the live render state
         Ps3TnlEnsureCpu(this, vtx1_idx);
         Ps3TnlEnsureCpu(this, vtx2_idx);
         Ps3TnlEnsureCpu(this, vtx3_idx);
         if (Ps3CpuRejectOrCull(this, v1, v2, v3)) {
             return;
         }
-    } else if (sPs3TriFast && sPs3TriFastEnabled && sTnlKeyValid && sTnlKeyOk) {
+    } else if (sPs3TriFast && sPs3TriFastEnabled && sTnlKeyValid && sTnlKeyOk &&
+               memcmp(&mRenderingState, &sPs3TriFastState, sizeof(sPs3TriFastState)) == 0) {
         // Same render state as the previous GPU-path triangle: the full setup below
         // would arrive at the same draw key, so queue the vertices directly (~2.7 us of
         // state work per triangle saved; ~2300 triangles per draw in Kokiri Forest).
@@ -2995,6 +3002,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
         if (Ps3TnlEmit(this, comb, ps3Idx, usedTextures, effective_tile, tex_width, tex_height, use_alpha, use_fog,
                        use_blend_color, numInputs)) {
             sPs3TriFast = true;
+            memcpy(&sPs3TriFastState, &mRenderingState, sizeof(sPs3TriFastState));
             ++sPs3TriFullPath;
             return;
         }
