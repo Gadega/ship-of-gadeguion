@@ -2302,6 +2302,22 @@ void func_800766C4(PlayState* play) {
 
 void Environment_FillScreen(GraphicsContext* gfxCtx, u8 red, u8 green, u8 blue, u8 alpha, u8 drawFlags) {
     if (alpha != 0) {
+#ifdef __PS3__
+    {
+        /* Test runner probe (GitHub #9): the colour this screen fill really draws with. */
+        extern int gOotPs3TestProbeFade;
+        static u32 sLast;
+        const u32 key = ((u32)(red) << 24) | ((u32)(green) << 16) | ((u32)(blue) << 8) | (u32)(alpha);
+        if (gOotPs3TestProbeFade && key != sLast) {
+            char line[96];
+            extern void oot_ps3_early_trace(const char* message);
+            sLast = key;
+            snprintf(line, sizeof(line), "trace: test-probe fill rgba=%u,%u,%u,%u", (unsigned)(red), (unsigned)(green),
+                     (unsigned)(blue), (unsigned)(alpha));
+            oot_ps3_early_trace(line);
+        }
+    }
+#endif
         OPEN_DISPS(gfxCtx);
 
         if (drawFlags & FILL_SCREEN_OPA) {

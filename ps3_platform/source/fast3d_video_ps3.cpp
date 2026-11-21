@@ -22,6 +22,8 @@ extern "C" void oot_ps3_fast3d_add_run(unsigned long long us);
 extern "C" void oot_ps3_early_trace(const char*);
 extern "C" void oot_ps3_rsx_texture_sampler(uint32_t id, int linear, int wrapS, int wrapT);
 extern "C" int oot_ps3_rsx_texture_read(uint32_t id, uint8_t* rgba, uint32_t width, uint32_t height);
+// Read by the test runner: texture ids handed out so far, and whether they ran out.
+extern "C" { unsigned int gOotPs3Fast3dTextureIds; int gOotPs3Fast3dTextureIdsExhausted; }
 extern "C" int oot_ps3_rsx_copy_fb(int fb);
 extern "C" void oot_ps3_debug_overlay_frame(unsigned int screenWidth, unsigned int screenHeight);
 extern "C" void oot_ps3_game_menu_frame(unsigned int screenWidth, unsigned int screenHeight);
@@ -168,10 +170,12 @@ class Ps3Renderer final : public GfxRenderingAPI {
         }
     }
     uint32_t NewTexture() override {
+        gOotPs3Fast3dTextureIds = static_cast<unsigned int>(textures_.size()) + 1U;
         // fast3d_rsx_ps3.c MAX_TEXTURES = 2048 (last one = white fallback)
         if (textures_.size() >= 2040) {
             if (!idsExhaustedLogged_) {
                 oot_ps3_early_trace("graph: Play fast3d texture ids exhausted (2040): new textures will not show");
+                gOotPs3Fast3dTextureIdsExhausted = 1;
                 idsExhaustedLogged_ = true;
             }
             return 0;

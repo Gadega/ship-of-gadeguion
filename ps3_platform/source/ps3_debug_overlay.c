@@ -114,7 +114,10 @@ int oot_ps3_debug_reset_to_title(void);
 int oot_ps3_debug_test_count(void);            /* ps3_debug_game.c: test cases */
 const char* oot_ps3_debug_test_name(int index);
 const char* oot_ps3_debug_test_check(int index);
-int oot_ps3_debug_run_test(int index);
+int oot_ps3_debug_run_test(int index);         /* ps3_test_runner.c */
+int oot_ps3_debug_run_all_tests(void);
+void oot_ps3_debug_stop_tests(void);
+int oot_ps3_test_running(void);
 void oot_ps3_audio_request_spu_mixer(int on); /* ps3_audio.c */
 int oot_ps3_audio_spu_mixer_on(void);
 
@@ -144,6 +147,19 @@ static int sListSel[PAGE_COUNT], sListTop[PAGE_COUNT];
 static int sCsAge = -1; /* age chosen for the selected cutscene (-1 = its own) */
 static unsigned int sPrevButtons, sHeldTicks;
 static int sMarkCount, sShotCount, sShotPending;
+/* Test runner screenshots (ps3_test_runner.c): taken on the render side at the end of
+ * the next drawn frame. */
+static char sAutoShotHdd[160], sAutoShotUsb[200];
+static volatile int sAutoShotPending;
+int oot_ps3_debug_request_shot(const char* hddPath, const char* usbPath) {
+    if (sAutoShotPending) return 0;
+    snprintf(sAutoShotHdd, sizeof(sAutoShotHdd), "%s", hddPath ? hddPath : "");
+    snprintf(sAutoShotUsb, sizeof(sAutoShotUsb), "%s", usbPath ? usbPath : "");
+    __sync_synchronize();
+    sAutoShotPending = 1;
+    return 1;
+}
+int oot_ps3_debug_shot_busy(void) { return sAutoShotPending; }
 static char sStatus[PANEL_COLS + 1];
 
 /* Performance numbers: per-update values from graph.c, frames counted here. */
@@ -216,7 +232,7 @@ static void Rasterize(void) {
 }
 
 /* ---- pages ---- */
-enum { ITEM_TESTS, ITEM_HUD, ITEM_WARP, ITEM_CUTSCENE, ITEM_ITEMS, ITEM_AGE, ITEM_RESET, ITEM_TRACE, ITEM_MIXER, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_TRIFAST, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
+enum { ITEM_RUNALL, ITEM_TESTS, ITEM_HUD, ITEM_WARP, ITEM_CUTSCENE, ITEM_ITEMS, ITEM_AGE, ITEM_RESET, ITEM_TRACE, ITEM_MIXER, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_TRIFAST, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
 
 /* Resolution: native by default, USRDIR/res720 forces 720p (rsx_screen.c, read at boot). */
 static int sRes720 = -1;
@@ -250,7 +266,8 @@ static void PerfLines(int row) {
 
 static void BuildMain(void) {
     static const char* const kLabels[ITEM_COUNT] = {
-        "Test cases (reported problems)...", "Performance HUD while playing", "Warp to area...", "Play a cutscene...", "Give items...",
+        "Run ALL tests (automatic, report + screenshots)", "Test cases (reported problems)...",
+        "Performance HUD while playing", "Warp to area...", "Play a cutscene...", "Give items...",
         "Switch Link's age (child / adult)", "Reset game (title screen)", "Log files (crash reports)",
         "Audio mixer", "Frame rate",
         "Resolution (after restart)", "GPU vertex path", "Render thread (game + draw in parallel)",
@@ -266,6 +283,7 @@ static void BuildMain(void) {
         char value[16] = "";
         switch (i) {
             case ITEM_HUD: snprintf(value, sizeof(value), "[%s]", sHud ? "ON" : "OFF"); break;
+            case ITEM_RUNALL: snprintf(value, sizeof(value), "%s", oot_ps3_test_running() ? "[RUNNING]" : ""); break;
             case ITEM_TRACE: snprintf(value, sizeof(value), "[%s]", oot_ps3_trace_enabled() ? "ON" : "OFF"); break;
             case ITEM_FPS: {
                 static const char* const kModes[5] = { "[60]", "[UNLOCKED]", "[20]", "[30 STEADY]", "[AUTO 60]" };
@@ -284,6 +302,8 @@ static void BuildMain(void) {
         Line(6 + i, i == sSel ? COL_SELECT : COL_TEXT, "%s %-40s %s", i == sSel ? ">" : " ", kLabels[i], value);
     }
     if (sSel == ITEM_TNL) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (vertex work on the RSX: faster; OFF = CPU path)");
+    if (sSel == ITEM_RUNALL) Line(6 + ITEM_COUNT + 1, COL_DIM, oot_ps3_test_running() ? "  (X: stop the run)"
+                                                                       : "  (~6 min; don't touch the pad; report in USRDIR/tests)");
     if (sSel == ITEM_AGE) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (reloads the area as the other age)");
     if (sSel == ITEM_SHOT) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (saved in USRDIR and on the USB drive)");
     if (sSel == ITEM_FPS) Line(6 + ITEM_COUNT + 1, COL_DIM, "  (auto: 60, steady 30 when heavy; unlocked may tear)");
@@ -365,37 +385,19 @@ static void PngChunk(const int* fds, int count, const char* tag, const uint8_t* 
     PngWriteAll(fds, count, tail, 4);
 }
 
-static void WriteScreenshot(void) {
+/* PNG of the frame drawn so far to one or two files (either may be NULL/empty).
+ * Returns 0 no frame, -1 cannot write, 1 HDD only, 2 USB too. */
+static int WriteScreenshotFiles(const char* path, const char* usbPath) {
     uint32_t width = 0, height = 0, y, x;
     const uint32_t* frame = oot_ps3_rsx_capture_frame(&width, &height);
-    char path[96], usbPath[128], usbRoot[32], msg[128];
     static uint8_t row[1 + 1920 * 3];
     static uint8_t out[256 * 1024];
     int fds[2] = { -1, -1 };
     z_stream zs;
-    if (frame == NULL || width == 0 || height == 0 || width > 1920) {
-        SetStatus("Screenshot failed: no frame");
-        return;
-    }
-    /* Next free screenshot_NNN.png. */
-    for (; sShotCount < 1000; ++sShotCount) {
-        int fd;
-        snprintf(path, sizeof(path), "/dev_hdd0/game/OOTP30048/USRDIR/screenshot_%03d.png", sShotCount + 1);
-        fd = open(path, O_RDONLY);
-        if (fd < 0) break;
-        close(fd);
-    }
-    ++sShotCount;
-    fds[0] = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    usbPath[0] = '\0';
-    if (oot_ps3_usb_root(usbRoot, sizeof(usbRoot))) {
-        snprintf(usbPath, sizeof(usbPath), "%s/ShipOfGadeguion-screenshot_%03d.png", usbRoot, sShotCount);
-        fds[1] = open(usbPath, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    }
-    if (fds[0] < 0 && fds[1] < 0) {
-        SetStatus("Screenshot failed: cannot write");
-        return;
-    }
+    if (frame == NULL || width == 0 || height == 0 || width > 1920) return 0;
+    if (path && path[0]) fds[0] = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (usbPath && usbPath[0]) fds[1] = open(usbPath, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fds[0] < 0 && fds[1] < 0) return -1;
     {
         uint8_t ihdr[13];
         PngWriteAll(fds, 2, "\x89PNG\r\n\x1a\n", 8);
@@ -436,7 +438,28 @@ static void WriteScreenshot(void) {
     PngChunk(fds, 2, "IEND", NULL, 0);
     if (fds[0] >= 0) close(fds[0]);
     if (fds[1] >= 0) { fsync(fds[1]); close(fds[1]); }
-    if (fds[1] >= 0) snprintf(msg, sizeof(msg), "Screenshot %03d saved (USRDIR + USB drive)", sShotCount);
+    return fds[1] >= 0 ? 2 : 1;
+}
+
+static void WriteScreenshot(void) {
+    char path[96], usbPath[128], usbRoot[32], msg[128];
+    int result;
+    /* Next free screenshot_NNN.png. */
+    for (; sShotCount < 1000; ++sShotCount) {
+        int fd;
+        snprintf(path, sizeof(path), "/dev_hdd0/game/OOTP30048/USRDIR/screenshot_%03d.png", sShotCount + 1);
+        fd = open(path, O_RDONLY);
+        if (fd < 0) break;
+        close(fd);
+    }
+    ++sShotCount;
+    usbPath[0] = '\0';
+    if (oot_ps3_usb_root(usbRoot, sizeof(usbRoot)))
+        snprintf(usbPath, sizeof(usbPath), "%s/ShipOfGadeguion-screenshot_%03d.png", usbRoot, sShotCount);
+    result = WriteScreenshotFiles(path, usbPath);
+    if (result == 0) { SetStatus("Screenshot failed: no frame"); return; }
+    if (result < 0) { SetStatus("Screenshot failed: cannot write"); return; }
+    if (result == 2) snprintf(msg, sizeof(msg), "Screenshot %03d saved (USRDIR + USB drive)", sShotCount);
     else snprintf(msg, sizeof(msg), "Screenshot saved: USRDIR/screenshot_%03d.png", sShotCount);
     SetStatus(msg);
     oot_ps3_early_trace(msg);
@@ -446,6 +469,16 @@ static void Activate(void) {
     char msg[80];
     switch (sSel) {
         case ITEM_HUD: sHud = !sHud; break;
+        case ITEM_RUNALL:
+            if (oot_ps3_test_running()) {
+                oot_ps3_debug_stop_tests();
+                SetStatus("Test run stopped");
+            } else if (oot_ps3_debug_run_all_tests()) {
+                sOpen = 0;
+            } else {
+                SetStatus("Not possible right now");
+            }
+            break;
         case ITEM_TESTS: sPage = PAGE_TESTS; SetStatus(""); break;
         case ITEM_WARP: sPage = PAGE_WARP; SetStatus(""); break;
         case ITEM_CUTSCENE: sPage = PAGE_CUTSCENE; sCsAge = -1; SetStatus(""); break;
@@ -611,6 +644,16 @@ void oot_ps3_debug_overlay_frame(unsigned int screenWidth, unsigned int screenHe
     if (sShotPending) {
         sShotPending = 0;
         WriteScreenshot();
+    }
+    if (sAutoShotPending) {
+        char line[240];
+        const int result = WriteScreenshotFiles(sAutoShotHdd, sAutoShotUsb);
+        snprintf(line, sizeof(line), "trace: test shot %s: %s", sAutoShotHdd,
+                 result == 2 ? "saved (USRDIR + USB)" : result == 1 ? "saved (USRDIR)" : result == 0 ? "FAILED (no frame)"
+                                                                                     : "FAILED (cannot write)");
+        oot_ps3_early_trace(line);
+        __sync_synchronize();
+        sAutoShotPending = 0;
     }
     if (!sOpen && !sHud) return;
     /* Rebuild the text at most 4 times per second (immediately after input). */

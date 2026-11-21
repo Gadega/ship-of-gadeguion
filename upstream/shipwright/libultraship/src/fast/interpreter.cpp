@@ -2545,6 +2545,79 @@ static bool Ps3TnlEmitRecords(Interpreter* g, const uint8_t idx[3]) {
 }
 #endif
 
+#ifdef __PS3__
+// Test-runner texture watch (debug menu "Run ALL tests", ps3_test_runner.c): for
+// triangles textured with a texture whose path contains the watched text, records once
+// a second how they reach the renderer - GPU/CPU path, clip-rejected, culled, colours,
+// blend/depth state and one transformed vertex - so "it isn't visible" gets a reason.
+static char sPs3WatchName[64];
+static volatile unsigned int sPs3WatchSeq;
+static unsigned int sPs3WatchSeen, sPs3WatchLines;
+static const void* sPs3WatchRes[2];
+static bool sPs3WatchMatch[2];
+static unsigned long long sPs3WatchT0;
+static struct { unsigned tris, gpu, cpu, rejected, culled, wneg, rects; } sPs3W;
+extern "C" void oot_ps3_fast3d_watch_texture(const char* text) {
+    snprintf(sPs3WatchName, sizeof(sPs3WatchName), "%s", text ? text : "");
+    ++sPs3WatchSeq;
+}
+static void Ps3WatchTri(Interpreter* g, uint8_t i1, uint8_t i2, uint8_t i3, bool gpu, bool isRect) {
+    if (sPs3WatchSeen != sPs3WatchSeq) {
+        sPs3WatchSeen = sPs3WatchSeq;
+        sPs3WatchRes[0] = sPs3WatchRes[1] = nullptr;
+        sPs3WatchMatch[0] = sPs3WatchMatch[1] = false;
+        memset(&sPs3W, 0, sizeof(sPs3W));
+        sPs3WatchLines = 0;
+        sPs3WatchT0 = oot_ps3_microseconds_now();
+    }
+    if (sPs3WatchName[0] == '\0') return;
+    const char* hit = nullptr;
+    for (int t = 0; t < 2; ++t) {
+        const auto& res = g->mRdp->loaded_texture[t].raw_tex_metadata.resource;
+        const void* key = res.get();
+        if (key != sPs3WatchRes[t]) {
+            sPs3WatchRes[t] = key;
+            sPs3WatchMatch[t] = key != nullptr && res->GetInitData() != nullptr &&
+                                res->GetInitData()->Path.find(sPs3WatchName) != std::string::npos;
+        }
+        if (sPs3WatchMatch[t]) hit = res->GetInitData()->Path.c_str();
+    }
+    if (hit == nullptr) return;
+    LoadedVertex* v1 = &g->mRsp->loaded_vertices[i1];
+    LoadedVertex* v2 = &g->mRsp->loaded_vertices[i2];
+    LoadedVertex* v3 = &g->mRsp->loaded_vertices[i3];
+    if (!isRect && i1 < MAX_VERTICES && i2 < MAX_VERTICES && i3 < MAX_VERTICES) {
+        Ps3TnlEnsureCpu(g, i1);
+        Ps3TnlEnsureCpu(g, i2);
+        Ps3TnlEnsureCpu(g, i3);
+    }
+    ++sPs3W.tris;
+    if (isRect) ++sPs3W.rects;
+    if (gpu) ++sPs3W.gpu; else ++sPs3W.cpu;
+    if (v1->clip_rej & v2->clip_rej & v3->clip_rej) ++sPs3W.rejected;
+    else if (Ps3CpuRejectOrCull(g, v1, v2, v3)) ++sPs3W.culled;
+    if (v1->w < 0 || v2->w < 0 || v3->w < 0) ++sPs3W.wneg;
+    const unsigned long long now = oot_ps3_microseconds_now();
+    if (now - sPs3WatchT0 < 1000000ULL || sPs3WatchLines >= 90) return;
+    sPs3WatchT0 = now;
+    ++sPs3WatchLines;
+    char line[400];
+    const RDP* r = g->mRdp;
+    snprintf(line, sizeof(line),
+             "trace: test-probe tex %s 1s: tris=%u gpu=%u cpu=%u rejected=%u culled=%u wneg=%u rects=%u | "
+             "combine=%016llx omL=%08x omH=%08x geo=%08x prim=%u,%u,%u,%u env=%u,%u,%u,%u blend=%d depth=%u "
+             "v0=(%.1f,%.1f,%.1f,%.1f) a=%u",
+             hit, sPs3W.tris, sPs3W.gpu, sPs3W.cpu, sPs3W.rejected, sPs3W.culled, sPs3W.wneg, sPs3W.rects,
+             (unsigned long long)r->combine_mode, (unsigned)r->other_mode_l, (unsigned)r->other_mode_h,
+             (unsigned)g->mRsp->geometry_mode, r->prim_color.r, r->prim_color.g, r->prim_color.b, r->prim_color.a,
+             r->env_color.r, r->env_color.g, r->env_color.b, r->env_color.a, g->mRenderingState.alpha_blend ? 1 : 0,
+             (unsigned)g->mRenderingState.depth_test_and_mask, (double)v1->x, (double)v1->y, (double)v1->z,
+             (double)v1->w, (unsigned)v1->color.a);
+    oot_ps3_early_trace(line);
+    memset(&sPs3W, 0, sizeof(sPs3W));
+}
+#endif
+
 void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx, bool is_rect) {
 #ifdef __PS3__
     if (sPs3GeoTriBudget > 0) {
@@ -2568,6 +2641,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
     const bool ps3Tnl = sTnlFrame && !is_rect && vtx1_idx < MAX_VERTICES && vtx2_idx < MAX_VERTICES &&
                         vtx3_idx < MAX_VERTICES && sTnlVtxState[vtx1_idx] != 0 && sTnlVtxState[vtx2_idx] != 0 &&
                         sTnlVtxState[vtx3_idx] != 0;
+    if (sPs3WatchName[0] != '\0' || sPs3WatchSeen != sPs3WatchSeq) Ps3WatchTri(this, vtx1_idx, vtx2_idx, vtx3_idx, ps3Tnl, is_rect);
     if (!ps3Tnl) {
         sPs3TriFast = false; // this triangle's setup may change the live render state
         Ps3TnlEnsureCpu(this, vtx1_idx);

@@ -89,6 +89,22 @@ void TransitionFade_Draw(void* thisx, Gfx** gfxP) {
     Color_RGBA8_u32* color = &this->fadeColor;
 
     if (color->a > 0) {
+#ifdef __PS3__
+    {
+        /* Test runner probe (GitHub #9): the colour this fade really draws with. */
+        extern int gOotPs3TestProbeFade;
+        static u32 sLast;
+        const u32 key = ((u32)(color->r) << 24) | ((u32)(color->g) << 16) | ((u32)(color->b) << 8) | (u32)(color->a);
+        if (gOotPs3TestProbeFade && key != sLast) {
+            char line[96];
+            extern void oot_ps3_early_trace(const char* message);
+            sLast = key;
+            snprintf(line, sizeof(line), "trace: test-probe fade rgba=%u,%u,%u,%u", (unsigned)(color->r), (unsigned)(color->g),
+                     (unsigned)(color->b), (unsigned)(color->a));
+            oot_ps3_early_trace(line);
+        }
+    }
+#endif
         gfx = *gfxP;
         gSPDisplayList(gfx++, sRCPSetupFade);
         gDPSetPrimColor(gfx++, 0, 0, color->r, color->g, color->b, color->a);

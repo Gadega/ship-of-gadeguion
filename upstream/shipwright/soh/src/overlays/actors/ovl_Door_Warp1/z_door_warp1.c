@@ -1086,7 +1086,8 @@ void DoorWarp1_Draw(Actor* thisx, PlayState* play) {
     {
         /* GitHub #7 (invisible blue warp): what the warp draws with, every ~2 s. */
         static u32 sCalls, sLines;
-        if ((sCalls++ % 40U) == 0U && sLines < 40) {
+        extern int gOotPs3TestActive; /* ps3_test_runner.c: no line limit during a test */
+        if ((sCalls++ % 40U) == 0U && (sLines < 40 || gOotPs3TestActive)) {
             char line[200];
             extern void oot_ps3_early_trace(const char* message);
             ++sLines;

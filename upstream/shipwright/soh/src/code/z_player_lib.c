@@ -1072,7 +1072,8 @@ void Player_DrawImpl(PlayState* play, void** skeleton, Vec3s* jointTable, s32 dL
         static s32 sLastKey = -1, sLines;
         const s32 eyeShown = eyeIndex >= 0 ? eyeIndex : sEyeMouthIndexes[face][0];
         const s32 key = ((jointTable[22].x & 0xFF) << 16) | ((face & 0xFF) << 8) | (eyeShown & 0xFF);
-        if (play->csCtx.state != CS_STATE_IDLE && key != sLastKey && sLines < 160) {
+        extern int gOotPs3TestActive; /* ps3_test_runner.c: no line limit during a test */
+        if (play->csCtx.state != CS_STATE_IDLE && key != sLastKey && (sLines < 160 || gOotPs3TestActive)) {
             char line[128];
             extern void oot_ps3_early_trace(const char* message);
             sLastKey = key;

@@ -392,6 +392,10 @@ fi
     -o "$OUT/objects/game-ps3-debug.o" >"$OUT/logs/game-ps3-debug.log" 2>&1 || {
     echo 'BLOCKED compiling debug menu game helpers'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/game-ps3-debug.log"; exit 3; }
 "${cc_run[@]}" "${game_main_flags[@]}" \
+    -c "$ROOT/ps3_platform/source/ps3_test_runner.c" \
+    -o "$OUT/objects/game-ps3-test-runner.o" >"$OUT/logs/game-ps3-test-runner.log" 2>&1 || {
+    echo 'BLOCKED compiling debug menu test runner'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/game-ps3-test-runner.log"; exit 3; }
+"${cc_run[@]}" "${game_main_flags[@]}" \
     -c "$UPSTREAM/soh/src/code/z_kanfont.c" \
     -o "$OUT/objects/game-kanfont.o" >"$OUT/logs/game-kanfont.log" 2>&1 || {
     echo 'BLOCKED compiling font loader'; grep -m3 -E 'fatal error:|error:' "$OUT/logs/game-kanfont.log"; exit 3; }
@@ -611,7 +615,7 @@ final_objects+=(
     "$OUT/objects/game-bgcheck.o"
     "$OUT/objects/game-en-mag.o"
     "$OUT/objects/game-kanfont.o"
-    "$OUT/objects/game-ps3-debug.o" "$OUT/objects/game-ps3-savestate.o"
+    "$OUT/objects/game-ps3-debug.o" "$OUT/objects/game-ps3-test-runner.o" "$OUT/objects/game-ps3-savestate.o"
     "$OUT/objects/game-effect-ss.o"
     "$OUT/objects/game-eff-kirakira.o"
     "$OUT/objects/game-fc-z-file-choose.o"

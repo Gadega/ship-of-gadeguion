@@ -728,10 +728,18 @@ unsigned int oot_ps3_trace_count(void) {
     return sPs3TraceCount;
 }
 
+/* Test runner (ps3_test_runner.c): sees every trace line, from every thread, before
+ * any filtering, and copies the ones its current test cares about into the report. */
+void (*volatile gOotPs3TraceTap)(const char* message) = 0;
+
 void oot_ps3_early_trace(const char* message) {
     unsigned int index;
     int activateCompact = 0;
     int activateLink = 0;
+    {
+        void (*tap)(const char*) = gOotPs3TraceTap;
+        if (tap != 0 && message != 0) tap(message);
+    }
     /* The audio thread's periodic reports are not game progress: counting them
      * kept the stall watchdog quiet while the game thread was frozen (pause
      * menu, 2026-10-10) and replaced the "stopped at" step. */
