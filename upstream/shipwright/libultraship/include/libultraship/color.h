@@ -19,7 +19,11 @@ extern "C" {
  */
 typedef union {
     struct {
-#ifdef IS_BIGENDIAN
+// PS3: IS_BIGENDIAN (endianness.h) is not defined yet where game code includes this, so
+// the PS3 build used the little-endian layout: .r read the alpha byte of .rgba (the gray
+// TransitionFade before the Deku Tree's first words came out reddish). Test the
+// compiler's byte order directly, like z64audio.h / command_macros_base.h.
+#if defined(IS_BIGENDIAN) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
         uint8_t r; ///< Red channel (big-endian layout).
         uint8_t g; ///< Green channel (big-endian layout).
         uint8_t b; ///< Blue channel (big-endian layout).

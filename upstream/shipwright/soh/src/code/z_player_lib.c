@@ -1065,6 +1065,24 @@ void Player_DrawImpl(PlayState* play, void** skeleton, Vec3s* jointTable, s32 dL
 
     OPEN_DISPS(play->state.gfxCtx);
     PLAYER_LIB_PS3_TRACE("player-draw-impl: before eye and mouth segments");
+#ifdef __PS3__
+    {
+        /* GitHub #8 (eyes open while Link sleeps): log what picks the eyes during
+         * cutscenes - animation face value, actor face, resulting eye texture. */
+        static s32 sLastKey = -1, sLines;
+        const s32 eyeShown = eyeIndex >= 0 ? eyeIndex : sEyeMouthIndexes[face][0];
+        const s32 key = ((jointTable[22].x & 0xFF) << 16) | ((face & 0xFF) << 8) | (eyeShown & 0xFF);
+        if (play->csCtx.state != CS_STATE_IDLE && key != sLastKey && sLines < 160) {
+            char line[128];
+            extern void oot_ps3_early_trace(const char* message);
+            sLastKey = key;
+            ++sLines;
+            snprintf(line, sizeof(line), "graph: Play link face: anim=%d face=%d eye=%d cs=%d scene=%d",
+                     (int)jointTable[22].x, (int)face, (int)eyeShown, (int)play->csCtx.frames, (int)play->sceneNum);
+            oot_ps3_early_trace(line);
+        }
+    }
+#endif
 
     if (eyeIndex < 0) {
         eyeIndex = sEyeMouthIndexes[face][0];

@@ -58,7 +58,7 @@ const char* oot_ps3_debug_warp_name(int index) {
 void Sram_InitNewSave(void);                     /* z_sram.c */
 void Audio_SetGameVolume(int player_id, f32 volume); /* code_800E4FE0.c */
 
-enum { PS3_REQ_NONE, PS3_REQ_WARP, PS3_REQ_AGE, PS3_REQ_CUTSCENE, PS3_REQ_RESET, PS3_REQ_STATE };
+enum { PS3_REQ_NONE, PS3_REQ_WARP, PS3_REQ_AGE, PS3_REQ_CUTSCENE, PS3_REQ_RESET, PS3_REQ_STATE, PS3_REQ_TEST };
 void oot_ps3_savestate_prepare_warp(void); /* ps3_savestate.c: puts the saved file in place */
 static int sPs3Request, sPs3RequestEntrance, sPs3RequestFrames, sPs3RequestCutscene, sPs3RequestAge;
 static char sPs3RequestName[64];
@@ -184,6 +184,161 @@ static void Ps3PrepareCutscene(int index) {
     }
 }
 
+/* ---- Test cases (debug menu "Test cases...") ----
+ * One entry per reported problem: it sets up the situation (area, age, cutscene, items,
+ * flags), and when the area has loaded shows a banner with what to look at, so a fix
+ * can be checked in seconds instead of replaying to that spot. Add one for every fix. */
+enum { TS_PLAIN, TS_GOHMA_FIGHT, TS_GOHMA_WARP, TS_DODONGO_FIGHT, TS_DUNGEON_KID, TS_TOUR };
+static const struct {
+    const char* name;
+    const char* check;
+    s16 entrance;
+    u16 cutsceneIndex; /* 0 = none (entrance cutscenes marked seen) */
+    s8 age;            /* LINK_AGE_ADULT / LINK_AGE_CHILD */
+    u8 setup;
+    s8 transitionIn;   /* fade into the area; -1 = the entrance's own */
+} kPs3TestList[] = {
+    { "#14 Queen Gohma: boss textures (fight)",
+      "Gohma's body, shell and eye must be textured (no black). Items given.",
+      ENTR_DEKU_TREE_BOSS_ENTRANCE, 0, LINK_AGE_CHILD, TS_GOHMA_FIGHT, -1 },
+    { "#14 King Dodongo: boss textures (fight)",
+      "King Dodongo and the lava floor must be textured (no black). Items given.",
+      ENTR_DODONGOS_CAVERN_BOSS_ENTRANCE, 0, LINK_AGE_CHILD, TS_DODONGO_FIGHT, -1 },
+    { "#7 Blue warp after Queen Gohma",
+      "Gohma beaten: the blue warp must glow in the middle of the room.",
+      ENTR_DEKU_TREE_BOSS_ENTRANCE, 0, LINK_AGE_CHILD, TS_GOHMA_WARP, -1 },
+    { "#9 Deku Tree's first words (gray screen)",
+      "\"Navi... where art thou\" must be over GRAY, not reddish.",
+      ENTR_KOKIRI_FOREST_0, 0xFFF3, LINK_AGE_CHILD, TS_PLAIN, TRANS_TYPE_FADE_WHITE_CS_DELAYED },
+    { "#8 Link asleep in bed (eyes)",
+      "Watch Link's eyes while he sleeps (compare with SoH on PC).",
+      ENTR_LINKS_HOUSE_CHILD_SPAWN, 0xFFF0, LINK_AGE_CHILD, TS_PLAIN, -1 },
+    { "#12 Minimap in Dodongo's Cavern",
+      "The blue minimap (bottom right) must be visible.",
+      ENTR_DODONGOS_CAVERN_ENTRANCE, 0, LINK_AGE_CHILD, TS_DUNGEON_KID, -1 },
+    { "#12/#13 Memory tour: 24 areas, then Dodongo's Cavern",
+      "Visits many areas (~5 s each) like a long session. Watch for missing textures.",
+      ENTR_KOKIRI_FOREST_0, 0, LINK_AGE_CHILD, TS_TOUR, -1 },
+};
+static const s16 kPs3TourList[] = {
+    ENTR_KOKIRI_FOREST_0, ENTR_LOST_WOODS_SOUTH_EXIT, ENTR_SACRED_FOREST_MEADOW_SOUTH_EXIT,
+    ENTR_HYRULE_FIELD_PAST_BRIDGE_SPAWN, ENTR_LON_LON_RANCH_ENTRANCE, ENTR_MARKET_ENTRANCE_NORTH_EXIT,
+    ENTR_MARKET_SOUTH_EXIT, ENTR_CASTLE_GROUNDS_SOUTH_EXIT, ENTR_KAKARIKO_VILLAGE_FRONT_GATE,
+    ENTR_GRAVEYARD_ENTRANCE, ENTR_DEATH_MOUNTAIN_TRAIL_BOTTOM_EXIT, ENTR_GORON_CITY_UPPER_EXIT,
+    ENTR_DEATH_MOUNTAIN_CRATER_UPPER_EXIT, ENTR_ZORAS_RIVER_WEST_EXIT, ENTR_ZORAS_DOMAIN_ENTRANCE,
+    ENTR_LAKE_HYLIA_NORTH_EXIT, ENTR_GERUDO_VALLEY_EAST_EXIT, ENTR_GERUDOS_FORTRESS_EAST_EXIT,
+    ENTR_DESERT_COLOSSUS_EAST_EXIT, ENTR_DEKU_TREE_ENTRANCE, ENTR_JABU_JABU_ENTRANCE,
+    ENTR_FOREST_TEMPLE_ENTRANCE, ENTR_FIRE_TEMPLE_ENTRANCE, ENTR_WATER_TEMPLE_ENTRANCE,
+};
+#define PS3_TOUR_STEPS ((int)ARRAY_COUNT(kPs3TourList))
+static int sPs3TestArrive = -1;  /* test waiting for its area */
+static s16 sPs3TestScene = -1;
+static int sPs3TourStep = -1;    /* memory tour: index in kPs3TourList, PS3_TOUR_STEPS = final area */
+static unsigned int sPs3TourWait;
+void oot_ps3_ui_hint(const char* title, const char* text, unsigned int frames); /* ps3_game_menu.c */
+
+int oot_ps3_debug_test_count(void) { return (int)ARRAY_COUNT(kPs3TestList); }
+const char* oot_ps3_debug_test_name(int index) {
+    return index >= 0 && index < (int)ARRAY_COUNT(kPs3TestList) ? kPs3TestList[index].name : "";
+}
+const char* oot_ps3_debug_test_check(int index) {
+    return index >= 0 && index < (int)ARRAY_COUNT(kPs3TestList) ? kPs3TestList[index].check : "";
+}
+int oot_ps3_debug_run_test(int index) {
+    if (index < 0 || index >= (int)ARRAY_COUNT(kPs3TestList)) return 0;
+    sPs3TourStep = -1;
+    return Ps3QueueRequest(PS3_REQ_TEST, kPs3TestList[index].entrance, index, kPs3TestList[index].age,
+                           kPs3TestList[index].name);
+}
+
+/* Before the area loads (flags, cutscene). */
+static void Ps3TestBeforeLoad(int index) {
+    const int setup = kPs3TestList[index].setup;
+    if (kPs3TestList[index].cutsceneIndex != 0) gSaveContext.nextCutsceneIndex = kPs3TestList[index].cutsceneIndex;
+    /* Gohma's arena is room 1 of her lair: its clear flag makes Boss_Goma spawn the warp. */
+    if (setup == TS_GOHMA_WARP) gSaveContext.sceneFlags[SCENE_DEKU_TREE_BOSS].clear |= 1U << 1;
+    if (setup == TS_GOHMA_FIGHT) gSaveContext.sceneFlags[SCENE_DEKU_TREE_BOSS].clear &= ~(1U << 1);
+    if (setup == TS_DODONGO_FIGHT) gSaveContext.sceneFlags[SCENE_DODONGOS_CAVERN_BOSS].clear &= ~(1U << 1);
+    if (setup == TS_TOUR) sPs3TourStep = 0;
+    sPs3TestArrive = index;
+    sPs3TestScene = gEntranceTable[kPs3TestList[index].entrance].scene;
+}
+static void Ps3TestAfterTransition(int index) {
+    if (kPs3TestList[index].transitionIn >= 0) gSaveContext.nextTransitionType = (u8)kPs3TestList[index].transitionIn;
+}
+
+static void Ps3GiveKidKit(PlayState* play, int bombs) {
+    Item_Give(play, ITEM_SWORD_KOKIRI);
+    Item_Give(play, ITEM_SHIELD_DEKU);
+    Item_Give(play, ITEM_SLINGSHOT);
+    Item_Give(play, ITEM_NUT);
+    Item_Give(play, ITEM_STICK);
+    if (bombs) {
+        Item_Give(play, ITEM_BOMB_BAG_20);
+        Item_Give(play, ITEM_BOMBS_20);
+    }
+    Inventory_ChangeEquipment(EQUIP_TYPE_SWORD, EQUIP_VALUE_SWORD_KOKIRI);
+    Inventory_ChangeEquipment(EQUIP_TYPE_SHIELD, EQUIP_VALUE_SHIELD_DEKU);
+    gSaveContext.equips.buttonItems[0] = ITEM_SWORD_KOKIRI;
+    gSaveContext.equips.buttonItems[1] = ITEM_SLINGSHOT;
+    gSaveContext.equips.cButtonSlots[0] = SLOT_SLINGSHOT;
+    if (bombs) {
+        gSaveContext.equips.buttonItems[2] = ITEM_BOMB;
+        gSaveContext.equips.cButtonSlots[1] = SLOT_BOMB;
+    }
+    Interface_LoadItemIcon1(play, 1);
+    if (bombs) Interface_LoadItemIcon1(play, 2);
+    gSaveContext.healthCapacity = gSaveContext.health = 10 * 0x10;
+    Player_SetEquipmentData(play, GET_PLAYER(play));
+}
+
+/* Area loaded (graph tick, "area start"): items, the banner, the tour. */
+static void Ps3TestArrived(PlayState* play) {
+    char line[200];
+    const int index = sPs3TestArrive;
+    if (index < 0 || play->sceneNum != sPs3TestScene) return;
+    sPs3TestArrive = -1;
+    switch (kPs3TestList[index].setup) {
+        case TS_GOHMA_FIGHT: case TS_GOHMA_WARP: case TS_DUNGEON_KID: Ps3GiveKidKit(play, 0); break;
+        case TS_DODONGO_FIGHT: Ps3GiveKidKit(play, 1); break;
+        default: break;
+    }
+    if (kPs3TestList[index].setup == TS_TOUR) {
+        sPs3TourWait = 0;
+        return; /* the tour shows its own banners */
+    }
+    oot_ps3_ui_hint(kPs3TestList[index].name, kPs3TestList[index].check, 600);
+    snprintf(line, sizeof(line), "trace: test case started: %s (scene %d)", kPs3TestList[index].name, (int)play->sceneNum);
+    oot_ps3_early_trace(line);
+}
+
+/* Memory tour: ~5 s in each area, then the next; ends in Dodongo's Cavern. */
+static void Ps3TourTick(PlayState* play) {
+    char title[64], line[160];
+    if (sPs3TourStep < 0 || sPs3Request != PS3_REQ_NONE || sPs3TestArrive >= 0) return;
+    if (play->transitionTrigger != TRANS_TRIGGER_OFF || play->transitionMode != TRANS_MODE_OFF) return;
+    if (++sPs3TourWait == 2) {
+        snprintf(title, sizeof(title), "Memory tour %d/%d", sPs3TourStep + 1, PS3_TOUR_STEPS + 1);
+        oot_ps3_ui_hint(title, sPs3TourStep < PS3_TOUR_STEPS ? "Press nothing; the tour moves on by itself."
+                                                              : "Tour done: check the minimap and textures here.",
+                        sPs3TourStep < PS3_TOUR_STEPS ? 90 : 900);
+    }
+    if (sPs3TourWait < 100) return; /* 100 updates = 5 s */
+    sPs3TourWait = 0;
+    if (sPs3TourStep >= PS3_TOUR_STEPS) {
+        snprintf(line, sizeof(line), "trace: test case memory tour finished (%d areas)", PS3_TOUR_STEPS + 1);
+        oot_ps3_early_trace(line);
+        sPs3TourStep = -1;
+        return;
+    }
+    ++sPs3TourStep;
+    {
+        const s16 entrance = sPs3TourStep < PS3_TOUR_STEPS ? kPs3TourList[sPs3TourStep] : ENTR_DODONGOS_CAVERN_ENTRANCE;
+        snprintf(line, sizeof(line), "memory tour step %d", sPs3TourStep + 1);
+        Ps3QueueRequest(PS3_REQ_WARP, entrance, -1, -1, line);
+    }
+}
+
 /* From a state that isn't gameplay (N64 logo, file select, or the title demo, which is
  * a Play state without a file): straight into a new Play state, like file select and
  * Map Select do. The title demo must not keep running with a file loaded: drawing its
@@ -208,7 +363,7 @@ static void Ps3ApplyOutsidePlay(PlayState* titlePlay) {
         Ps3EnsureGameSave(NULL);
     }
     Ps3ClearSaveForWarp();
-    Ps3SetAge(NULL, sPs3Request == PS3_REQ_CUTSCENE ? sPs3RequestAge : -1);
+    Ps3SetAge(NULL, (sPs3Request == PS3_REQ_CUTSCENE || sPs3Request == PS3_REQ_TEST) ? sPs3RequestAge : -1);
     /* the age is already applied: graph.c must not swap the equipment again */
     if (titlePlay != NULL) titlePlay->linkAgeOnLoad = gSaveContext.linkAge;
     Audio_QueueSeqCmd(SEQ_PLAYER_BGM_MAIN << 24 | NA_BGM_STOP);
@@ -218,6 +373,10 @@ static void Ps3ApplyOutsidePlay(PlayState* titlePlay) {
     } else {
         extern void Cutscene_Ps3MarkEntranceCutscenesSeen(s16 entrance, s32 age);
         Cutscene_Ps3MarkEntranceCutscenesSeen(sPs3RequestEntrance, gSaveContext.linkAge);
+    }
+    if (sPs3Request == PS3_REQ_TEST) {
+        Ps3TestBeforeLoad(sPs3RequestCutscene);
+        Ps3TestAfterTransition(sPs3RequestCutscene);
     }
     SET_NEXT_GAMESTATE(state, Play_Init, PlayState);
     snprintf(line, sizeof(line), "trace: debug menu %s (entrance %04X, age %d) from outside gameplay", sPs3RequestName,
@@ -273,6 +432,13 @@ static void Ps3ApplyRequest(PlayState* play) {
         Ps3StartTransition(play, entrance, 1);
         snprintf(line, sizeof(line), "trace: debug menu age switch -> %s at entrance %04X",
                  play->linkAgeOnLoad == LINK_AGE_ADULT ? "adult" : "child", (unsigned)(u16)entrance);
+    } else if (sPs3Request == PS3_REQ_TEST) {
+        Ps3SetAge(play, sPs3RequestAge);
+        Ps3TestBeforeLoad(sPs3RequestCutscene);
+        Ps3StartTransition(play, (s16)sPs3RequestEntrance, kPs3TestList[sPs3RequestCutscene].cutsceneIndex == 0);
+        Ps3TestAfterTransition(sPs3RequestCutscene);
+        snprintf(line, sizeof(line), "trace: debug menu test case %s (entrance %04X)", sPs3RequestName,
+                 (unsigned)(u16)sPs3RequestEntrance);
     } else if (sPs3Request == PS3_REQ_CUTSCENE) {
         Ps3SetAge(play, sPs3RequestAge);
         Ps3PrepareCutscene(sPs3RequestCutscene);
@@ -453,6 +619,7 @@ void oot_ps3_debug_game_tick(void) {
         return;
     }
     Ps3ApplyRequest(play);
+    Ps3TourTick(play);
     ++sUpdates;
     if ((void*)play != sLastPlay || play->sceneNum != sLastScene) {
         sLastPlay = play;
@@ -460,6 +627,7 @@ void oot_ps3_debug_game_tick(void) {
         sUpdates = 0;
         Ps3LogState(play, "area start");
         Ps3LogMemory("area start");
+        Ps3TestArrived(play);
     } else if (sUpdates % 200U == 0U) { /* 200 updates = 10 s */
         Ps3LogState(play, "every 10 s");
         if (sUpdates % 1200U == 0U) Ps3LogMemory("every 60 s");

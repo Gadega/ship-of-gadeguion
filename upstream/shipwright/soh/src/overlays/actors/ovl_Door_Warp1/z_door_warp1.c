@@ -1082,6 +1082,24 @@ void DoorWarp1_DrawWarp(DoorWarp1* this, PlayState* play) {
 
 void DoorWarp1_Draw(Actor* thisx, PlayState* play) {
     DoorWarp1* this = (DoorWarp1*)thisx;
+#ifdef __PS3__
+    {
+        /* GitHub #7 (invisible blue warp): what the warp draws with, every ~2 s. */
+        static u32 sCalls, sLines;
+        if ((sCalls++ % 40U) == 0U && sLines < 40) {
+            char line[200];
+            extern void oot_ps3_early_trace(const char* message);
+            ++sLines;
+            snprintf(line, sizeof(line),
+                     "graph: Play warp draw params=%d alpha=%.1f rays=%.1f u194=%.2f u198=%.2f u19C=%d u1AE=%d "
+                     "pos=(%.0f,%.0f,%.0f)",
+                     (int)this->actor.params, (double)this->warpAlpha, (double)this->lightRayAlpha,
+                     (double)this->unk_194, (double)this->unk_198, (int)this->unk_19C, (int)this->unk_1AE,
+                     (double)this->actor.world.pos.x, (double)this->actor.world.pos.y, (double)this->actor.world.pos.z);
+            oot_ps3_early_trace(line);
+        }
+    }
+#endif
 
     switch (this->actor.params) {
         case WARP_DUNGEON_ADULT:

@@ -21,7 +21,10 @@
  * thread stacks / SPU / system modules). Never less than the old fixed 64 MiB. */
 #define OOT_PS3_HEAP_MIN (64U * 1024U * 1024U)
 #define OOT_PS3_HEAP_MAX (128U * 1024U * 1024U)
-#define OOT_PS3_HEAP_RESERVE (96U * 1024U * 1024U)
+/* 1.3.0 logs: with a 96 MB reserve ~70 MB of LV2 memory was still free during play
+ * (archive copy already loaded). 80 MB keeps ~54 MB for save-state slots (27) and the
+ * save data container (5; a console save must never fail). */
+#define OOT_PS3_HEAP_RESERVE (80U * 1024U * 1024U)
 
 static unsigned int sHeapSize = OOT_PS3_HEAP_MIN;
 static unsigned int sUserMemTotal, sUserMemFreeAtStart;

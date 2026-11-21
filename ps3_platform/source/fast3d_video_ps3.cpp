@@ -21,6 +21,7 @@ extern "C" void oot_ps3_fast3d_add_run(unsigned long long us);
 
 extern "C" void oot_ps3_early_trace(const char*);
 extern "C" void oot_ps3_rsx_texture_sampler(uint32_t id, int linear, int wrapS, int wrapT);
+extern "C" int oot_ps3_rsx_texture_read(uint32_t id, uint8_t* rgba, uint32_t width, uint32_t height);
 extern "C" int oot_ps3_rsx_copy_fb(int fb);
 extern "C" void oot_ps3_debug_overlay_frame(unsigned int screenWidth, unsigned int screenHeight);
 extern "C" void oot_ps3_game_menu_frame(unsigned int screenWidth, unsigned int screenHeight);
@@ -94,8 +95,26 @@ class Ps3Renderer final : public GfxRenderingAPI {
     struct TextureState {
         uint32_t width = 0;
         uint32_t height = 0;
+        uint32_t version = 0; // bumped on every changed upload (mask composites)
+        uint64_t hash = 0;    // of the last upload: skips identical re-uploads
+        bool uploaded = false;
+        // CPU copy: only kept for mask/replacement slots and the software fallback.
+        // Keeping one for every RSX texture held ~15-25 MB of the heap (1024 cached
+        // textures at 4 bytes per texel) for the whole session.
         std::vector<uint8_t> pixels;
     };
+    // SoH masked/blended textures (Gfx_RegisterBlendedTexture: Gohma, King Dodongo,
+    // Phantom Ganon, Ganon's cape, ...). Fast3D puts the mask in texture slot 2/3 and the
+    // replacement in 4/5; LUS shaders do tex = mix(tex, replacement or 0, mask.a). The
+    // RSX programs have two texture units, so the PS3 renderer composes that on the CPU
+    // into a separate texture id and binds it instead of the base texture.
+    struct MaskComposite {
+        uint32_t base = 0, mask = 0, blend = 0;
+        uint32_t vBase = 0, vMask = 0, vBlend = 0;
+        uint32_t id = 0, lastUse = 0;
+        bool linear = false; int wrapS = 0, wrapT = 0;
+    };
+    struct SamplerState { bool set = false, linear = false; int wrapS = 0, wrapT = 0; };
     struct Point {
         float x, y, z, u, v;
         uint32_t color;
@@ -149,23 +168,39 @@ class Ps3Renderer final : public GfxRenderingAPI {
         }
     }
     uint32_t NewTexture() override {
-        if (textures_.size() >= 1023) return 0;
+        // fast3d_rsx_ps3.c MAX_TEXTURES = 2048 (last one = white fallback)
+        if (textures_.size() >= 2040) {
+            if (!idsExhaustedLogged_) {
+                oot_ps3_early_trace("graph: Play fast3d texture ids exhausted (2040): new textures will not show");
+                idsExhaustedLogged_ = true;
+            }
+            return 0;
+        }
         textures_.emplace_back();
+        samplers_.emplace_back();
         return static_cast<uint32_t>(textures_.size());
     }
     void SelectTexture(int tile, uint32_t id) override {
-        if (tile >= 0 && tile < 2) { selected_[tile] = id; uploadTile_ = tile; }
+        // 0/1 = texel0/1, 2/3 = masks, 4/5 = mask replacements (SHADER_FIRST_*_TEXTURE).
+        // Slots 2..5 used to be ignored, so a mask upload overwrote the base texture
+        // (black boss textures in 1.3.0).
+        if (tile >= 0 && tile < 6) { selected_[tile] = id; uploadTile_ = tile; }
     }
     void UploadTexture(const uint8_t* rgba, uint32_t width, uint32_t height) override {
         const uint32_t id = selected_[uploadTile_];
         if (!rgba || !id || id > textures_.size() || width > 512 || height > 512) return;
         TextureState& texture = textures_[id - 1];
         const size_t bytes = static_cast<size_t>(width) * height * 4;
-        if (texture.width == width && texture.height == height &&
-            texture.pixels.size() == bytes &&
-            std::memcmp(texture.pixels.data(), rgba, bytes) == 0) return;
-        texture.width = width; texture.height = height;
-        texture.pixels.assign(rgba, rgba + bytes);
+        const uint64_t hash = HashBytes(rgba, bytes);
+        if (texture.uploaded && texture.width == width && texture.height == height && texture.hash == hash) return;
+        texture.width = width; texture.height = height; texture.hash = hash; texture.uploaded = true;
+        if (uploadTile_ >= 2 || !gpuActive_) {
+            texture.pixels.assign(rgba, rgba + bytes);
+        } else if (!texture.pixels.empty()) {
+            std::vector<uint8_t>().swap(texture.pixels);
+        }
+        ++texture.version;
+        if (uploadTile_ >= 2) return; // masks/replacements are only read by ComposeMasked
         if (gpuActive_ && diagnosticUploads_ < 5) {
             char diagnostic[150];
             snprintf(diagnostic, sizeof(diagnostic),
@@ -185,6 +220,8 @@ class Ps3Renderer final : public GfxRenderingAPI {
         // N64 tile modes: bit 1 = G_TX_CLAMP, bit 0 = G_TX_MIRROR (same mapping as Fast3D's PC backends).
         const auto mode = [](uint32_t v) -> int { return (v & 2U) ? 2 : ((v & 1U) ? 1 : 0); };
         oot_ps3_rsx_texture_sampler(selected_[tile], linear ? 1 : 0, mode(cms), mode(cmt));
+        const uint32_t id = selected_[tile];
+        if (id && id <= samplers_.size()) samplers_[id - 1] = SamplerState{ true, linear, mode(cms), mode(cmt) };
     }
     void SetDepthTestAndMask(bool test, bool write) override {
         depthTest_ = test;
@@ -236,8 +273,8 @@ class Ps3Renderer final : public GfxRenderingAPI {
         const bool tex0 = active_->features.usedTextures[0];
         const bool tex1 = active_->features.usedTextures[1];
         submitted_ += count / 3U;
-        if (!oot_ps3_rsx_tnl_draw(records, count, consts, drawDirty, firstConst, numConst, tex0 ? selected_[0] : 0,
-                                  tex1 ? selected_[1] : 0, alpha_ ? 1 : 0, cullMode, cullFlip, floatAttribs)) {
+        if (!oot_ps3_rsx_tnl_draw(records, count, consts, drawDirty, firstConst, numConst, tex0 ? BoundTexture(0) : 0,
+                                  tex1 ? BoundTexture(1) : 0, alpha_ ? 1 : 0, cullMode, cullFlip, floatAttribs)) {
             oot_ps3_early_trace("graph: Play tnl draw failed");
             return 0;
         }
@@ -341,8 +378,8 @@ class Ps3Renderer final : public GfxRenderingAPI {
                     oot_ps3_rsx_set_draw_state(uvOff[0], uvOff[1], fogOff, inputOff, per, flags, packs);
                 }
                 if (oot_ps3_rsx_triangles(vbo, static_cast<uint32_t>(stride),
-                        static_cast<uint32_t>(triangles), tex0 ? selected_[0] : 0,
-                        tex1 ? selected_[1] : 0, alpha_,
+                        static_cast<uint32_t>(triangles), tex0 ? BoundTexture(0) : 0,
+                        tex1 ? BoundTexture(1) : 0, alpha_,
                         static_cast<uint32_t>(features.numInputs), material)) {
                     valid_ += static_cast<uint32_t>(triangles);
                 } else {
@@ -583,7 +620,101 @@ class Ps3Renderer final : public GfxRenderingAPI {
         uploadTile_ = 0;
     }
     void DeleteTexture(uint32_t id) override {
-        if (id && id <= textures_.size()) textures_[id - 1].pixels.clear();
+        if (id && id <= textures_.size()) {
+            std::vector<uint8_t>().swap(textures_[id - 1].pixels);
+            textures_[id - 1].uploaded = false;
+            ++textures_[id - 1].version;
+        }
+    }
+    static uint64_t HashBytes(const uint8_t* p, size_t n) {
+        uint64_t h = 1469598103934665603ULL ^ n;
+        size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            uint64_t v;
+            std::memcpy(&v, p + i, 8);
+            h = (h ^ v) * 1099511628211ULL;
+            h ^= h >> 29;
+        }
+        for (; i < n; ++i) h = (h ^ p[i]) * 1099511628211ULL;
+        return h;
+    }
+    // Texture to bind for texel i: the base texture, or its mask composite when the
+    // current shader masks it.
+    uint32_t BoundTexture(int i) {
+        const uint32_t base = selected_[i];
+        if (!active_ || !active_->features.used_masks[i] || (base & 0x8000U)) return base;
+        const uint32_t composite = ComposeMasked(base, selected_[2 + i], active_->features.used_blend[i] ? selected_[4 + i] : 0);
+        return composite ? composite : base;
+    }
+    const TextureState* Tex(uint32_t id) const {
+        return id && id <= textures_.size() && !textures_[id - 1].pixels.empty() ? &textures_[id - 1] : nullptr;
+    }
+    uint32_t ComposeMasked(uint32_t base, uint32_t mask, uint32_t blend) {
+        if (!base || base > textures_.size() || !textures_[base - 1].uploaded || !Tex(mask)) return 0;
+        ++composeClock_;
+        MaskComposite* entry = nullptr;
+        for (MaskComposite& c : composites_)
+            if (c.base == base && c.mask == mask && c.blend == blend) { entry = &c; break; }
+        if (!entry) {
+            if (composites_.size() < kMaxComposites) {
+                const uint32_t id = NewTexture();
+                if (!id) return 0;
+                composites_.emplace_back();
+                entry = &composites_.back();
+                entry->id = id;
+            } else { // reuse the least recently used one
+                entry = &composites_[0];
+                for (MaskComposite& c : composites_) if (c.lastUse < entry->lastUse) entry = &c;
+            }
+            entry->base = base; entry->mask = mask; entry->blend = blend;
+            entry->vBase = entry->vMask = entry->vBlend = 0xFFFFFFFFU;
+            if (maskTraces_ < 24) {
+                char line[140];
+                snprintf(line, sizeof(line), "graph: Play mask texture composite id=%u base=%u mask=%u blend=%u",
+                         entry->id, base, mask, blend);
+                oot_ps3_early_trace(line);
+                ++maskTraces_;
+            }
+        }
+        entry->lastUse = composeClock_;
+        const TextureState* b = &textures_[base - 1];
+        const TextureState* m = Tex(mask);
+        const TextureState* r = Tex(blend);
+        const uint32_t vr = r ? r->version : 0;
+        if (entry->vBase != b->version || entry->vMask != m->version || entry->vBlend != vr) {
+            const uint32_t w = b->width, h = b->height;
+            // the base texture's bytes: CPU copy if kept, else read back from RSX memory
+            const uint8_t* basePixels = b->pixels.empty() ? nullptr : b->pixels.data();
+            if (!basePixels) {
+                baseBuf_.resize(static_cast<size_t>(w) * h * 4);
+                if (!oot_ps3_rsx_texture_read(base, baseBuf_.data(), w, h)) return 0;
+                basePixels = baseBuf_.data();
+            }
+            composeBuf_.resize(static_cast<size_t>(w) * h * 4);
+            for (uint32_t y = 0; y < h; ++y) {
+                const uint32_t my = y * m->height / h;
+                const uint32_t ry = r ? y * r->height / h : 0;
+                for (uint32_t x = 0; x < w; ++x) {
+                    const uint8_t* src = &basePixels[(static_cast<size_t>(y) * w + x) * 4];
+                    uint8_t* dst = &composeBuf_[(static_cast<size_t>(y) * w + x) * 4];
+                    const uint32_t mx = x * m->width / w;
+                    const uint32_t a = m->pixels[(static_cast<size_t>(my) * m->width + mx) * 4 + 3];
+                    const uint8_t zero[4] = { 0, 0, 0, 0 };
+                    const uint8_t* rep = r ? &r->pixels[(static_cast<size_t>(ry) * r->width + x * r->width / w) * 4] : zero;
+                    for (int k = 0; k < 4; ++k)
+                        dst[k] = static_cast<uint8_t>((src[k] * (255U - a) + rep[k] * a + 127U) / 255U);
+                }
+            }
+            if (gpuActive_ && !oot_ps3_rsx_texture(entry->id, composeBuf_.data(), w, h))
+                oot_ps3_early_trace("fast3d-rsx: mask composite upload failed");
+            entry->vBase = b->version; entry->vMask = m->version; entry->vBlend = vr;
+        }
+        const SamplerState s = base <= samplers_.size() ? samplers_[base - 1] : SamplerState{};
+        if (s.set && (s.linear != entry->linear || s.wrapS != entry->wrapS || s.wrapT != entry->wrapT)) {
+            oot_ps3_rsx_texture_sampler(entry->id, s.linear ? 1 : 0, s.wrapS, s.wrapT);
+            entry->linear = s.linear; entry->wrapS = s.wrapS; entry->wrapT = s.wrapT;
+        }
+        return entry->id;
     }
     void SetTextureFilter(FilteringMode mode) override { filter_ = mode; }
     FilteringMode GetTextureFilter() override { return filter_; }
@@ -703,7 +834,13 @@ class Ps3Renderer final : public GfxRenderingAPI {
     uint32_t width_ = 0, height_ = 0;
     uint32_t displayWidth_ = 0, displayHeight_ = 0;
     int renderScale_ = 1;
-    uint32_t selected_[2]{};
+    uint32_t selected_[6]{};
+    std::vector<SamplerState> samplers_;
+    std::vector<MaskComposite> composites_;
+    std::vector<uint8_t> composeBuf_, baseBuf_;
+    uint32_t composeClock_ = 0, maskTraces_ = 0;
+    bool idsExhaustedLogged_ = false;
+    static constexpr size_t kMaxComposites = 64;
     int uploadTile_ = 0;
     int vx_ = 0, vy_ = 0, vw_ = 320, vh_ = 240;
     int sx_ = 0, sy_ = 0, sw_ = 320, sh_ = 240;

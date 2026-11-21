@@ -29,6 +29,16 @@
 #define BTN_SELECT 0x0200U
 
 void oot_ps3_early_trace(const char* message);
+
+/* Test-case banner (debug menu "Test cases..."): what to look at, shown at the top of the
+ * screen for a while after the test's area has loaded. */
+static char sHintTitle[96], sHintText[160];
+static unsigned int sHintFrames;
+void oot_ps3_ui_hint(const char* title, const char* text, unsigned int frames) {
+    snprintf(sHintTitle, sizeof(sHintTitle), "%s", title ? title : "");
+    snprintf(sHintText, sizeof(sHintText), "%s", text ? text : "");
+    sHintFrames = frames;
+}
 void oot_ps3_audio_set_master(float volume);       /* ps3_audio.c */
 int oot_ps3_audio_is_ready(void);                  /* ps3_audio.c */
 void oot_ps3_set_game_volumes(float music, float sfx); /* ps3_debug_game.c */
@@ -40,6 +50,8 @@ void oot_ps3_savestate_request(int load, int slot);     /* ps3_savestate.c */
 int oot_ps3_savestate_slot_used(int slot);
 void oot_ps3_savestate_clear_all(void);
 const char* oot_ps3_savestate_status(unsigned int* serial);
+unsigned int oot_ps3_heap_used_kb(void);  /* ps3_sbrk_fixed.c: heap high-water mark */
+unsigned int oot_ps3_heap_size_kb(void);
 
 enum { ITEM_RESUME, ITEM_SAVESTATE, ITEM_LOADSTATE, ITEM_MASTER, ITEM_MUSIC, ITEM_SFX, ITEM_RUMBLE, ITEM_DEBUG, ITEM_RESET, ITEM_QUIT, ITEM_COUNT };
 
@@ -208,6 +220,45 @@ void oot_ps3_game_menu_frame(unsigned int screenWidth, unsigned int screenHeight
             ps3ui_text(64, 52, 30, 0xFFFFFFFF, 0, status);
             ps3ui_end();
         }
+    }
+    {
+        /* Memory warning: areas are not freed yet, so a very long session can fill the
+         * heap and close the game. Before that happens, ask the player to save. Shown
+         * for ~8 s when the heap passes 94 %, again every ~3 minutes while it stays. */
+        static unsigned int sCheck, sWarnFrames, sNextWarn;
+        if (++sCheck >= 120) {
+            const unsigned int used = oot_ps3_heap_used_kb(), size = oot_ps3_heap_size_kb();
+            sCheck = 0;
+            if (size && used >= size / 100U * 94U && sNextWarn == 0) {
+                char line[120];
+                snprintf(line, sizeof(line), "graph: Play memory warning shown: heap %u of %u KB", used, size);
+                oot_ps3_early_trace(line);
+                sWarnFrames = 480;
+                sNextWarn = 90; /* checks of 120 frames: ~3 minutes */
+            } else if (sNextWarn > 0) {
+                --sNextWarn;
+            }
+        }
+        if (sWarnFrames > 0 && !sOpen && ps3ui_begin(screenWidth, screenHeight)) {
+            static const char* const kText = "Memory is almost full: please save your game and restart it.";
+            const float w = ps3ui_text_width(kText, 30, 0) + 48;
+            --sWarnFrames;
+            ps3ui_rect(40, 110, w, 56, 0x30100BE0);
+            ps3ui_rect(40, 110, 5, 56, 0xFF9A60FF);
+            ps3ui_text(64, 122, 30, 0xFFFFFFFF, 0, kText);
+            ps3ui_end();
+        }
+    }
+    if (sHintFrames > 0 && !sOpen && ps3ui_begin(screenWidth, screenHeight)) {
+        const float wTitle = ps3ui_text_width(sHintTitle, 34, 1), wText = ps3ui_text_width(sHintText, 28, 0);
+        const float w = (wTitle > wText ? wTitle : wText) + 56;
+        const float x = (ps3ui_width() - w) * 0.5f;
+        --sHintFrames;
+        ps3ui_rect(x, 180, w, 108, 0x0B2A16E8);
+        ps3ui_rect(x, 180, 5, 108, 0x7CE08AFF);
+        ps3ui_text(x + 28, 194, 34, 0xB8F5C2FF, 1, sHintTitle);
+        ps3ui_text(x + 28, 244, 28, 0xFFFFFFFF, 0, sHintText);
+        ps3ui_end();
     }
     if (!sOpen || !ps3ui_begin(screenWidth, screenHeight)) return;
     ps3ui_rect(0, 0, ps3ui_width(), 1080, 0x00000060); /* dim the game a little */

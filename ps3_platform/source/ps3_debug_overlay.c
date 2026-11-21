@@ -111,6 +111,10 @@ int oot_ps3_debug_item_count(void);
 const char* oot_ps3_debug_item_name(int index);
 int oot_ps3_debug_give_item(int index);
 int oot_ps3_debug_reset_to_title(void);
+int oot_ps3_debug_test_count(void);            /* ps3_debug_game.c: test cases */
+const char* oot_ps3_debug_test_name(int index);
+const char* oot_ps3_debug_test_check(int index);
+int oot_ps3_debug_run_test(int index);
 void oot_ps3_audio_request_spu_mixer(int on); /* ps3_audio.c */
 int oot_ps3_audio_spu_mixer_on(void);
 
@@ -135,7 +139,7 @@ static int sUploaded;
 
 static int sOpen, sHud, sPage, sSel, sSwallow;
 /* list pages: 1 warp, 2 cutscenes, 3 items */
-enum { PAGE_MAIN, PAGE_WARP, PAGE_CUTSCENE, PAGE_ITEMS, PAGE_COUNT };
+enum { PAGE_MAIN, PAGE_WARP, PAGE_CUTSCENE, PAGE_ITEMS, PAGE_TESTS, PAGE_COUNT };
 static int sListSel[PAGE_COUNT], sListTop[PAGE_COUNT];
 static int sCsAge = -1; /* age chosen for the selected cutscene (-1 = its own) */
 static unsigned int sPrevButtons, sHeldTicks;
@@ -212,7 +216,7 @@ static void Rasterize(void) {
 }
 
 /* ---- pages ---- */
-enum { ITEM_HUD, ITEM_WARP, ITEM_CUTSCENE, ITEM_ITEMS, ITEM_AGE, ITEM_RESET, ITEM_TRACE, ITEM_MIXER, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_TRIFAST, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
+enum { ITEM_TESTS, ITEM_HUD, ITEM_WARP, ITEM_CUTSCENE, ITEM_ITEMS, ITEM_AGE, ITEM_RESET, ITEM_TRACE, ITEM_MIXER, ITEM_FPS, ITEM_RES, ITEM_TNL, ITEM_THREAD, ITEM_TRIFAST, ITEM_MARK, ITEM_SHOT, ITEM_CLOSE, ITEM_COUNT };
 
 /* Resolution: native by default, USRDIR/res720 forces 720p (rsx_screen.c, read at boot). */
 static int sRes720 = -1;
@@ -246,7 +250,7 @@ static void PerfLines(int row) {
 
 static void BuildMain(void) {
     static const char* const kLabels[ITEM_COUNT] = {
-        "Performance HUD while playing", "Warp to area...", "Play a cutscene...", "Give items...",
+        "Test cases (reported problems)...", "Performance HUD while playing", "Warp to area...", "Play a cutscene...", "Give items...",
         "Switch Link's age (child / adult)", "Reset game (title screen)", "Log files (crash reports)",
         "Audio mixer", "Frame rate",
         "Resolution (after restart)", "GPU vertex path", "Render thread (game + draw in parallel)",
@@ -291,19 +295,23 @@ static void BuildMain(void) {
 static int ListCount(int page) {
     return page == PAGE_WARP ? oot_ps3_debug_warp_count()
          : page == PAGE_CUTSCENE ? oot_ps3_debug_cutscene_count()
-         : page == PAGE_ITEMS ? oot_ps3_debug_item_count() : 0;
+         : page == PAGE_ITEMS ? oot_ps3_debug_item_count()
+         : page == PAGE_TESTS ? oot_ps3_debug_test_count() : 0;
 }
 static const char* ListName(int page, int index) {
     return page == PAGE_WARP ? oot_ps3_debug_warp_name(index)
-         : page == PAGE_CUTSCENE ? oot_ps3_debug_cutscene_name(index) : oot_ps3_debug_item_name(index);
+         : page == PAGE_CUTSCENE ? oot_ps3_debug_cutscene_name(index)
+         : page == PAGE_TESTS ? oot_ps3_debug_test_name(index) : oot_ps3_debug_item_name(index);
 }
 
 static void BuildList(int page) {
-    static const char* const kTitles[PAGE_COUNT] = { "", "WARP TO AREA", "PLAY A CUTSCENE", "GIVE ITEMS" };
+    static const char* const kTitles[PAGE_COUNT] = { "", "WARP TO AREA", "PLAY A CUTSCENE", "GIVE ITEMS",
+                                                     "TEST CASES (set up a reported problem)" };
     static const char* const kHelp[PAGE_COUNT] = {
         "", "D-pad: move  L1/R1: page  X: warp  O: back",
         "D-pad: move  L1/R1: page  Left/Right: age  X: play  O: back",
         "D-pad: move  L1/R1: page  X: give  O: back",
+        "D-pad: move  X: run the test (sets up area, age, items)  O: back",
     };
     const int count = ListCount(page);
     const int visible = PANEL_ROWS - 6;
@@ -323,6 +331,7 @@ static void BuildList(int page) {
                  ListName(page, index));
         }
     }
+    if (page == PAGE_TESTS && count > 0) Line(PANEL_ROWS - 4, COL_VALUE, "Check: %.56s", oot_ps3_debug_test_check(sel));
     Line(PANEL_ROWS - 3, COL_WARN, "%s", sStatus);
     Line(PANEL_ROWS - 1, COL_DIM, "%s", kHelp[page]);
 }
@@ -437,6 +446,7 @@ static void Activate(void) {
     char msg[80];
     switch (sSel) {
         case ITEM_HUD: sHud = !sHud; break;
+        case ITEM_TESTS: sPage = PAGE_TESTS; SetStatus(""); break;
         case ITEM_WARP: sPage = PAGE_WARP; SetStatus(""); break;
         case ITEM_CUTSCENE: sPage = PAGE_CUTSCENE; sCsAge = -1; SetStatus(""); break;
         case ITEM_ITEMS:
@@ -561,6 +571,7 @@ int oot_ps3_debug_input(unsigned int buttons) {
                 if (pressed & DBG_BTN_CROSS) {
                     int ok = 0;
                     if (page == PAGE_WARP) ok = oot_ps3_debug_warp(*sel);
+                    else if (page == PAGE_TESTS) ok = oot_ps3_debug_run_test(*sel);
                     else if (page == PAGE_CUTSCENE)
                         ok = oot_ps3_debug_play_cutscene(*sel, sCsAge >= 0 ? sCsAge : oot_ps3_debug_cutscene_age(*sel));
                     if (page == PAGE_ITEMS) {

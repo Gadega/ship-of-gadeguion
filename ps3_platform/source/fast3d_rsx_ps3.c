@@ -378,7 +378,11 @@ extern void oot_ps3_early_trace(const char* message);
 
 /* 16384 vertices (2.9 MB per buffer): a Kokiri Forest frame (~8000) fits without
  * a mid-frame wrap, which needs a full GPU sync. */
-enum { MAX_VERTICES = 16384, MAX_TEXTURES = 1024 };
+/* MAX_TEXTURES: Fast3D's texture cache holds 1024 entries before it evicts, plus mask
+ * composites; the last slot is the white fallback. 1024 here (1023 usable ids) gave the
+ * 1024th cached texture id 0 after ~1 h of new areas: it never uploaded and, if drawn
+ * every frame (the minimap), never got evicted either. */
+enum { MAX_VERTICES = 16384, MAX_TEXTURES = 2048 };
 enum { VERTEX_FLOATS = 44 };
 typedef struct {
     gcmTexture image;
@@ -1076,6 +1080,36 @@ static void Ps3Swizzle(const uint32_t* src, uint32_t* dst, uint32_t width, uint3
         const uint32_t base = oy[y];
         for (uint32_t x = 0; x < width; ++x) dst[base | ox[x]] = row[x];
     }
+}
+
+/* Reads an uploaded texture back as the RGBA bytes it was uploaded from (mask composites
+ * in fast3d_video_ps3.cpp; the renderer no longer keeps CPU copies). Slow uncached reads
+ * from RSX memory, so only for small, rarely changing textures. */
+int oot_ps3_rsx_texture_read(uint32_t id, uint8_t* rgba, uint32_t width, uint32_t height) {
+    const GpuTexture* t;
+    if (!prepared || !id || id >= MAX_TEXTURES || !rgba) return 0;
+    t = &textures[id - 1];
+    if (!t->pixels || t->image.width != width || t->image.height != height) return 0;
+    if (t->image.format & GCM_TEXTURE_FORMAT_LIN) {
+        memcpy(rgba, t->pixels, (size_t)width * height * 4);
+        return 1;
+    }
+    memcpy(sSwizzleBuf, t->pixels, (size_t)width * height * 4); /* one sequential read */
+    {
+        const uint32_t lw = Ps3Log2(width), lh = Ps3Log2(height);
+        uint32_t* out = (uint32_t*)(void*)rgba;
+        for (uint32_t y = 0; y < height; ++y) {
+            for (uint32_t x = 0; x < width; ++x) {
+                uint32_t xx = x, yy = y, bw = lw, bh = lh, off = 0, shift = 0;
+                while (bw | bh) {
+                    if (bw) { off |= (xx & 1U) << shift; xx >>= 1; ++shift; --bw; }
+                    if (bh) { off |= (yy & 1U) << shift; yy >>= 1; ++shift; --bh; }
+                }
+                out[y * width + x] = sSwizzleBuf[off];
+            }
+        }
+    }
+    return 1;
 }
 
 static int Ps3UploadRgba(GpuTexture* t, const uint8_t* rgba, uint32_t width, uint32_t height) {
