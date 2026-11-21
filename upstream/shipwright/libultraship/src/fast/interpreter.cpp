@@ -2584,31 +2584,47 @@ static bool Ps3CombinerUsesTexel(const RDP* r, int t) {
     return false;
 }
 
-static void Ps3WatchTri(Interpreter* g, uint8_t i1, uint8_t i2, uint8_t i3, bool gpu, bool isRect) {
-    if (sPs3WatchSeen != sPs3WatchSeq) {
-        sPs3WatchSeen = sPs3WatchSeq;
-        sPs3WatchRes[0] = sPs3WatchRes[1] = nullptr;
-        sPs3WatchMatch[0] = sPs3WatchMatch[1] = false;
-        memset(&sPs3W, 0, sizeof(sPs3W));
-        sPs3WatchLines = 0;
-        sPs3WatchT0 = oot_ps3_microseconds_now();
-    }
+// Texel slot i holds the watched texture (set when GfxSpTri1 imports a texture into
+// the slot; the triangle counts only if its shader really reads that slot).
+static bool sPs3WatchBound[2];
+static const char* sPs3WatchBoundPath[2];
+static bool sPs3WatchLastHit;  // for the triangle fast path (same state as the last full one)
+static const char* sPs3WatchLastPath;
+static unsigned sPs3WatchKinds[4]; // 0 GPU, 1 GPU fast path, 2 GPU refused -> CPU, 3 CPU path
+static uint32_t sPs3WatchInfo[6];  // tex w/h of the slot, tm (clamp), inputs, alpha, slot mask
+static void Ps3WatchReset(void) {
+    if (sPs3WatchSeen == sPs3WatchSeq) return;
+    sPs3WatchSeen = sPs3WatchSeq;
+    sPs3WatchRes[0] = sPs3WatchRes[1] = nullptr;
+    sPs3WatchMatch[0] = sPs3WatchMatch[1] = false;
+    sPs3WatchBound[0] = sPs3WatchBound[1] = false;
+    sPs3WatchLastHit = false;
+    memset(&sPs3W, 0, sizeof(sPs3W));
+    memset(sPs3WatchKinds, 0, sizeof(sPs3WatchKinds));
+    sPs3WSCount = sPs3WSOther = 0;
+    sPs3WatchLines = 0;
+    sPs3WatchT0 = oot_ps3_microseconds_now();
+}
+static void Ps3WatchNoteImport(Interpreter* g, int slot, uint32_t tile) {
+    Ps3WatchReset();
+    if (slot < 0 || slot > 1) return;
+    sPs3WatchBound[slot] = false;
     if (sPs3WatchName[0] == '\0') return;
-    const char* hit = nullptr;
-    for (int t = 0; t < 2; ++t) {
-        // the texture this triangle samples for texel t: tile -> TMEM slot, as GfxSpTri1
-        uint32_t tile = g->mRdp->first_tile_index + t;
-        if (t == 1 && g->mRdp->first_tile_index >= 2) tile = g->mRdp->first_tile_index;
-        const auto& res = g->mRdp->loaded_texture[g->mRdp->texture_tile[tile & 7].tmem_index & 1].raw_tex_metadata.resource;
-        const void* key = res.get();
-        if (key != sPs3WatchRes[t]) {
-            sPs3WatchRes[t] = key;
-            sPs3WatchMatch[t] = key != nullptr && res->GetInitData() != nullptr &&
-                                res->GetInitData()->Path.find(sPs3WatchName) != std::string::npos;
-        }
-        if (sPs3WatchMatch[t] && Ps3CombinerUsesTexel(g->mRdp, t)) hit = res->GetInitData()->Path.c_str();
+    const auto& res = g->mRdp->loaded_texture[g->mRdp->texture_tile[tile & 7].tmem_index & 1].raw_tex_metadata.resource;
+    const void* key = res.get();
+    if (key != sPs3WatchRes[slot]) {
+        sPs3WatchRes[slot] = key;
+        sPs3WatchMatch[slot] = key != nullptr && res->GetInitData() != nullptr &&
+                               res->GetInitData()->Path.find(sPs3WatchName) != std::string::npos;
     }
-    if (hit == nullptr) return;
+    sPs3WatchBound[slot] = sPs3WatchMatch[slot];
+    if (sPs3WatchMatch[slot]) sPs3WatchBoundPath[slot] = res->GetInitData()->Path.c_str();
+}
+static void Ps3WatchTri(Interpreter* g, uint8_t i1, uint8_t i2, uint8_t i3, int kind, bool isRect, const char* hit) {
+    Ps3WatchReset();
+    if (sPs3WatchName[0] == '\0' || hit == nullptr) return;
+    if (kind >= 0 && kind < 4) ++sPs3WatchKinds[kind];
+    const bool gpu = kind <= 2;
     LoadedVertex* v1 = &g->mRsp->loaded_vertices[i1];
     LoadedVertex* v2 = &g->mRsp->loaded_vertices[i2];
     LoadedVertex* v3 = &g->mRsp->loaded_vertices[i3];
@@ -2641,13 +2657,17 @@ static void Ps3WatchTri(Interpreter* g, uint8_t i1, uint8_t i2, uint8_t i3, bool
     if (now - sPs3WatchT0 < 1000000ULL || sPs3WatchLines >= 90) return;
     sPs3WatchT0 = now;
     ++sPs3WatchLines;
-    char line[400];
+    char line[560];
     const RDP* r = g->mRdp;
     snprintf(line, sizeof(line),
-             "trace: test-probe tex %s 1s: tris=%u gpu=%u cpu=%u rejected=%u culled=%u wneg=%u rects=%u | "
+             "trace: test-probe tex %s 1s: tris=%u gpu=%u cpu=%u rejected=%u culled=%u wneg=%u rects=%u "
+             "path(gpu=%u fast=%u gpuRefused=%u cpu=%u) tex=%ux%u tm=%u inputs=%u alpha=%u slots=%u | "
              "combine=%016llx omL=%08x omH=%08x geo=%08x prim=%u,%u,%u,%u env=%u,%u,%u,%u blend=%d depth=%u "
              "v0=(%.1f,%.1f,%.1f,%.1f) a=%u",
              hit, sPs3W.tris, sPs3W.gpu, sPs3W.cpu, sPs3W.rejected, sPs3W.culled, sPs3W.wneg, sPs3W.rects,
+             sPs3WatchKinds[0], sPs3WatchKinds[1], sPs3WatchKinds[2], sPs3WatchKinds[3], (unsigned)sPs3WatchInfo[0],
+             (unsigned)sPs3WatchInfo[1], (unsigned)sPs3WatchInfo[2], (unsigned)sPs3WatchInfo[3],
+             (unsigned)sPs3WatchInfo[4], (unsigned)sPs3WatchInfo[5],
              (unsigned long long)r->combine_mode, (unsigned)r->other_mode_l, (unsigned)r->other_mode_h,
              (unsigned)g->mRsp->geometry_mode, r->prim_color.r, r->prim_color.g, r->prim_color.b, r->prim_color.a,
              r->env_color.r, r->env_color.g, r->env_color.b, r->env_color.a, g->mRenderingState.alpha_blend ? 1 : 0,
@@ -2665,6 +2685,7 @@ static void Ps3WatchTri(Interpreter* g, uint8_t i1, uint8_t i2, uint8_t i3, bool
     }
     sPs3WSCount = sPs3WSOther = 0;
     memset(&sPs3W, 0, sizeof(sPs3W));
+    memset(sPs3WatchKinds, 0, sizeof(sPs3WatchKinds));
 }
 #endif
 
@@ -2691,7 +2712,6 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
     const bool ps3Tnl = sTnlFrame && !is_rect && vtx1_idx < MAX_VERTICES && vtx2_idx < MAX_VERTICES &&
                         vtx3_idx < MAX_VERTICES && sTnlVtxState[vtx1_idx] != 0 && sTnlVtxState[vtx2_idx] != 0 &&
                         sTnlVtxState[vtx3_idx] != 0;
-    if (sPs3WatchName[0] != '\0' || sPs3WatchSeen != sPs3WatchSeq) Ps3WatchTri(this, vtx1_idx, vtx2_idx, vtx3_idx, ps3Tnl, is_rect);
     if (!ps3Tnl) {
         sPs3TriFast = false; // this triangle's setup may change the live render state
         Ps3TnlEnsureCpu(this, vtx1_idx);
@@ -2707,6 +2727,7 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
         // state work per triangle saved; ~2300 triangles per draw in Kokiri Forest).
         const uint8_t ps3FastIdx[3] = { vtx1_idx, vtx2_idx, vtx3_idx };
         if (Ps3TnlEmitRecords(this, ps3FastIdx)) {
+            if (sPs3WatchLastHit) Ps3WatchTri(this, vtx1_idx, vtx2_idx, vtx3_idx, 1, is_rect, sPs3WatchLastPath);
             ++sPs3TriFastHits;
             return;
         }
@@ -2961,6 +2982,9 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
             if (mRdp->textures_changed[i]) {
                 Flush();
                 ImportTexture(i, tile, false);
+#ifdef __PS3__
+                Ps3WatchNoteImport(this, i, tile);
+#endif
                 if (mRdp->loaded_texture[i].masked) {
                     ImportTextureMask(SHADER_FIRST_MASK_TEXTURE + i, tile);
                 }
@@ -3121,16 +3145,35 @@ void Interpreter::GfxSpTri1(uint8_t vtx1_idx, uint8_t vtx2_idx, uint8_t vtx3_idx
 #endif
 
 #ifdef __PS3__
+    const char* ps3WatchHit = nullptr;
+    if (sPs3WatchName[0] != '\0') {
+        for (int k = 0; k < 2; ++k)
+            if (usedTextures[k] && sPs3WatchBound[k]) {
+                ps3WatchHit = sPs3WatchBoundPath[k];
+                sPs3WatchInfo[0] = tex_width[k];
+                sPs3WatchInfo[1] = tex_height[k];
+                sPs3WatchInfo[5] = (usedTextures[0] ? 1U : 0U) | (usedTextures[1] ? 2U : 0U) | (k ? 8U : 4U);
+            }
+        sPs3WatchInfo[2] = tm;
+        sPs3WatchInfo[3] = numInputs;
+        sPs3WatchInfo[4] = use_alpha ? 1U : 0U;
+    }
+    sPs3WatchLastHit = ps3WatchHit != nullptr;
+    sPs3WatchLastPath = ps3WatchHit;
+    if (!ps3Tnl && ps3WatchHit) Ps3WatchTri(this, vtx1_idx, vtx2_idx, vtx3_idx, 3, is_rect, ps3WatchHit);
     if (ps3Tnl) {
         const uint8_t ps3Idx[3] = { vtx1_idx, vtx2_idx, vtx3_idx };
         if (Ps3TnlEmit(this, comb, ps3Idx, usedTextures, effective_tile, tex_width, tex_height, use_alpha, use_fog,
                        use_blend_color, numInputs)) {
+            if (ps3WatchHit) Ps3WatchTri(this, vtx1_idx, vtx2_idx, vtx3_idx, 0, is_rect, ps3WatchHit);
             sPs3TriFast = true;
             memcpy(&sPs3TriFastState, &mRenderingState, sizeof(sPs3TriFastState));
             ++sPs3TriFullPath;
             return;
         }
         sPs3TriFast = false;
+        sPs3WatchLastHit = false;
+        if (ps3WatchHit) Ps3WatchTri(this, vtx1_idx, vtx2_idx, vtx3_idx, 2, is_rect, ps3WatchHit);
         // This draw can't use the GPU path: transform on the CPU, then the usual checks.
         for (int i = 0; i < 3; i++) {
             Ps3TnlEnsureCpu(this, ps3Idx[i]);

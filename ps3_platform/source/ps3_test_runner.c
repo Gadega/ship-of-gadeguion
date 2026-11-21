@@ -33,6 +33,9 @@ int oot_ps3_usb_root(char* out, unsigned int size);
 unsigned long long oot_ps3_microseconds_now(void);
 int oot_ps3_debug_request_shot(const char* hddPath, const char* usbPath); /* ps3_debug_overlay.c */
 int oot_ps3_debug_shot_busy(void);
+int oot_ps3_debug_request_shot_check(const char* hddPath, const char* usbPath, const char* tag, float x0, float y0,
+                                     float x1, float y1);
+void oot_ps3_tnl_set_requested(int on);
 void oot_ps3_fast3d_watch_texture(const char* text);                  /* interpreter.cpp */
 void oot_ps3_ui_hint(const char* title, const char* text, unsigned int frames); /* ps3_game_menu.c */
 int oot_ps3_debug_queue_test(int index, int entrance, int age, const char* name); /* ps3_debug_game.c */
@@ -60,7 +63,9 @@ int gOotPs3TestActive;    /* other probes may log more while a test runs */
 enum { TS_PLAIN, TS_GOHMA_FIGHT, TS_GOHMA_WARP, TS_DODONGO_FIGHT, TS_DUNGEON_KID, TS_TOUR };
 enum { PR_MASKS = 1, PR_FADE = 2, PR_WARP = 4, PR_FACE = 8, PR_MINIMAP = 16, PR_MEMORY = 32 };
 enum { AT_MS, AT_CS };                       /* when: ms after the area loaded / cutscene frame */
-enum { ACT_SHOT, ACT_TELEPORT_WARP, ACT_STATE, ACT_END, ACT_PLACE_LINK };
+enum { ACT_SHOT, ACT_TELEPORT_WARP, ACT_STATE, ACT_END, ACT_PLACE_LINK, ACT_GPU_OFF, ACT_GPU_RESTORE, ACT_SHOT_ALT };
+/* pixel check box for each screenshot: none, fixed box, around an actor, around Link */
+enum { PX_NONE, PX_BOX, PX_ACTOR, PX_LINK };
 typedef struct {
     u8 when;
     u16 at;
@@ -80,6 +85,9 @@ typedef struct {
     const char* watchTexture; /* renderer texture watch, NULL = none */
     Ps3TestStep steps[STEPS_MAX];
     f32 place[3];             /* ACT_PLACE_LINK target (where the scene's trigger is) */
+    u8 pixelTarget;           /* PX_* */
+    s16 pixelActor;           /* PX_ACTOR: actor id */
+    f32 box[4];               /* PX_BOX: x0,y0,x1,y1 (0..1); PX_ACTOR/PX_LINK: box[0] = half size */
 } Ps3TestCase;
 
 static const Ps3TestCase kPs3TestList[] = {
@@ -88,36 +96,45 @@ static const Ps3TestCase kPs3TestList[] = {
       ENTR_DEKU_TREE_BOSS_ENTRANCE, 0, LINK_AGE_CHILD, TS_GOHMA_FIGHT, -1, PR_MASKS, "object_goma",
       { { AT_MS, 1500, ACT_PLACE_LINK }, { AT_MS, 6000, ACT_SHOT }, { AT_MS, 12000, ACT_SHOT },
         { AT_MS, 18000, ACT_SHOT }, { AT_MS, 24000, ACT_SHOT }, { AT_MS, 30000, ACT_SHOT }, { AT_MS, 32000, ACT_END } },
-      { 150.0f, -640.0f, 350.0f } /* z_boss_goma.c encounter: |x-150| < 60, |z-350| < 60 */ },
+      { 150.0f, -640.0f, 350.0f } /* z_boss_goma.c encounter: |x-150| < 60, |z-350| < 60 */,
+      PX_ACTOR, ACTOR_BOSS_GOMA, { 0.12f } },
     { "#14 King Dodongo: boss textures (fight)", "dodongo",
       "King Dodongo and the lava floor must be textured (no black).",
       ENTR_DODONGOS_CAVERN_BOSS_ENTRANCE, 0, LINK_AGE_CHILD, TS_DODONGO_FIGHT, -1, PR_MASKS, "object_kingdodongo",
       { { AT_MS, 1500, ACT_PLACE_LINK }, { AT_MS, 6000, ACT_SHOT }, { AT_MS, 12000, ACT_SHOT },
         { AT_MS, 18000, ACT_SHOT }, { AT_MS, 24000, ACT_SHOT }, { AT_MS, 26000, ACT_END } },
-      { -890.0f, -1100.0f, -2804.0f } /* drop into the arena: the intro starts below y -1223.76 */ },
+      { -890.0f, -1100.0f, -2804.0f } /* drop into the arena: the intro starts below y -1223.76 */,
+      PX_ACTOR, ACTOR_BOSS_DODONGO, { 0.15f } },
     { "#7 Blue warp after Queen Gohma", "bluewarp",
       "Gohma beaten: the blue warp must glow in the middle of the room.",
       ENTR_DEKU_TREE_BOSS_ENTRANCE, 0, LINK_AGE_CHILD, TS_GOHMA_WARP, -1, PR_WARP, "gWarpPortalTex",
       { { AT_MS, 3000, ACT_SHOT }, { AT_MS, 5000, ACT_TELEPORT_WARP }, { AT_MS, 7000, ACT_SHOT },
-        { AT_MS, 9000, ACT_STATE }, { AT_MS, 10000, ACT_SHOT }, { AT_MS, 11000, ACT_END } } },
+        { AT_MS, 9000, ACT_STATE }, { AT_MS, 10000, ACT_SHOT }, { AT_MS, 11000, ACT_GPU_OFF },
+        { AT_MS, 13000, ACT_SHOT_ALT }, { AT_MS, 15000, ACT_SHOT_ALT }, { AT_MS, 15500, ACT_GPU_RESTORE },
+        { AT_MS, 16000, ACT_END } },
+      { 0 }, PX_ACTOR, ACTOR_DOOR_WARP1, { 0.10f } /* A/B: shots 4-5 with the GPU vertex path OFF */ },
     { "#9 Deku Tree's first words (gray screen)", "graytext",
       "The Deku Tree's first line must be shown over GRAY, not reddish.",
       ENTR_KOKIRI_FOREST_0, 0xFFF3, LINK_AGE_CHILD, TS_PLAIN, TRANS_TYPE_FADE_WHITE_CS_DELAYED, PR_FADE, NULL,
       { { AT_MS, 1500, ACT_SHOT }, { AT_MS, 4000, ACT_SHOT }, { AT_MS, 7000, ACT_SHOT }, { AT_MS, 10000, ACT_SHOT },
-        { AT_MS, 12000, ACT_END } } },
+        { AT_MS, 12000, ACT_END } },
+      { 0 }, PX_BOX, 0, { 0.05f, 0.05f, 0.95f, 0.70f } /* the screen above the text box */ },
     { "#8 Link asleep in bed (eyes)", "eyes",
       "Watch Link's eyes while he sleeps (compare with SoH on PC).",
       ENTR_LINKS_HOUSE_CHILD_SPAWN, 0xFFF0, LINK_AGE_CHILD, TS_PLAIN, -1, PR_FACE, "Eyes",
       { { AT_CS, 60, ACT_SHOT }, { AT_CS, 150, ACT_SHOT }, { AT_CS, 260, ACT_SHOT }, { AT_CS, 400, ACT_SHOT },
-        { AT_CS, 560, ACT_SHOT }, { AT_CS, 600, ACT_END }, { AT_MS, 45000, ACT_END } } },
+        { AT_CS, 560, ACT_SHOT }, { AT_CS, 600, ACT_END }, { AT_MS, 45000, ACT_END } },
+      { 0 }, PX_LINK, 0, { 0.06f } },
     { "#12 Minimap in Dodongo's Cavern", "minimap",
       "Dungeon map given: the blue minimap (bottom right) must be visible.",
       ENTR_DODONGOS_CAVERN_ENTRANCE, 0, LINK_AGE_CHILD, TS_DUNGEON_KID, -1, PR_MINIMAP, "MinimapTex",
-      { { AT_MS, 4000, ACT_SHOT }, { AT_MS, 9000, ACT_SHOT }, { AT_MS, 12000, ACT_END } } },
+      { { AT_MS, 4000, ACT_SHOT }, { AT_MS, 9000, ACT_SHOT }, { AT_MS, 12000, ACT_END } },
+      { 0 }, PX_BOX, 0, { 0.62f, 0.55f, 0.97f, 0.95f } /* bottom right: the dungeon minimap */ },
     { "#12/#13 Memory tour: 25 areas, then the minimap", "tour",
       "Visits many areas (~5 s each) like a long session. Watch for missing textures.",
       ENTR_KOKIRI_FOREST_0, 0, LINK_AGE_CHILD, TS_TOUR, -1, PR_MEMORY | PR_MINIMAP, "MinimapTex",
-      { { AT_MS, 60000, ACT_END } } /* steps unused: the tour drives itself */ },
+      { { AT_MS, 60000, ACT_END } } /* steps unused: the tour drives itself */,
+      { 0 }, PX_BOX, 0, { 0.62f, 0.55f, 0.97f, 0.95f } },
 };
 #define PS3_TEST_COUNT ((int)ARRAY_COUNT(kPs3TestList))
 
@@ -191,6 +208,10 @@ static struct {
     unsigned int errors, idsExhausted, memWarnings;
     unsigned int memLines, heapMinKb, heapMaxKb;
     unsigned int shotsOk, shotsFailed;
+    /* screenshot pixel checks: [0] normal shots, [1] "alt" shots (GPU vertex path OFF) */
+    unsigned int px[2], pxMaxCyanBlue[2], pxMinCyanBlue[2], pxMaxRed[2], pxMaxGray[2], pxMinGray[2], pxMaxBlack[2];
+    unsigned int pathGpu, pathFast, pathRefused, pathCpu;
+    int pixelAlt; /* the next pixel line belongs to an alt shot */
 } sM;
 
 static unsigned int ParseU(const char* text, const char* key) {
@@ -237,6 +258,10 @@ static void Tap(const char* m) {
         sM.watchRejected += ParseU(m, "rejected=");
         sM.watchCulled += ParseU(m, "culled=");
         sM.watchWneg += ParseU(m, "wneg=");
+        sM.pathGpu += ParseU(m, "path(gpu=");
+        sM.pathFast += ParseU(m, " fast=");
+        sM.pathRefused += ParseU(m, "gpuRefused=");
+        { const char* path = strstr(m, "path("); if (path) sM.pathCpu += ParseU(path, " cpu="); }
         if (p && sscanf(p + 5, "%u,%u,%u,%u", &pr, &pg, &pb, &pa) == 4 && pa == 0) ++sM.watchAlphaZero;
     } else if (strncmp(m, "graph: Play warp draw", 21) == 0) ++sM.warpDrawLines;
     else if (strncmp(m, "graph: Play link face", 21) == 0) {
@@ -252,6 +277,17 @@ static void Tap(const char* m) {
             if (sM.heapMinKb == 0 || heap < sM.heapMinKb) sM.heapMinKb = heap;
             if (heap > sM.heapMaxKb) sM.heapMaxKb = heap;
         }
+    } else if (strncmp(m, "trace: test pixels", 18) == 0 && strstr(m, "FAILED") == NULL) {
+        const int b = strstr(m, " alt") != NULL ? 1 : 0;
+        const unsigned int cb = ParseU(m, "cyan=") + ParseU(m, " blue="), red = ParseU(m, "red="), gray = ParseU(m, "gray="),
+                           blk = ParseU(m, "black=");
+        if (sM.px[b]++ == 0) { sM.pxMinCyanBlue[b] = cb; sM.pxMinGray[b] = gray; }
+        if (cb > sM.pxMaxCyanBlue[b]) sM.pxMaxCyanBlue[b] = cb;
+        if (cb < sM.pxMinCyanBlue[b]) sM.pxMinCyanBlue[b] = cb;
+        if (red > sM.pxMaxRed[b]) sM.pxMaxRed[b] = red;
+        if (gray > sM.pxMaxGray[b]) sM.pxMaxGray[b] = gray;
+        if (gray < sM.pxMinGray[b]) sM.pxMinGray[b] = gray;
+        if (blk > sM.pxMaxBlack[b]) sM.pxMaxBlack[b] = blk;
     } else if (strncmp(m, "trace: test shot", 16) == 0) {
         if (strstr(m, "FAILED")) ++sM.shotsFailed; else ++sM.shotsOk;
     }
@@ -343,8 +379,9 @@ static unsigned long long sQueuedT0, sArriveT0;
 static int sTourStep;
 static unsigned long long sTourT0;
 static int sTourShot;
-static char sVerdicts[32][200];
+static char sVerdicts[32][420];
 static unsigned int sHeapAtRunStart;
+static int sGpuWas = -1; /* GPU vertex path before ACT_GPU_OFF (-1 = untouched) */
 
 int oot_ps3_test_running(void) { return sRunState != RS_IDLE; }
 
@@ -361,14 +398,39 @@ static void ReportSettings(void) {
            oot_ps3_system_free_kb(), gOotPs3Fast3dTextureIds, gOotPs3Fast3dTextureIdsExhausted ? " (EXHAUSTED)" : "");
 }
 
-static void Shot(const char* tag) {
-    char hdd[200], usb[240], line[160];
+static Actor* FindActor(PlayState* play, s16 id);
+
+/* Screen box (0..1) around a projected world position; 0 if behind the camera. */
+static int ScreenBox(const Vec3f* projected, f32 w, f32 half, f32* box) {
+    f32 u, v;
+    if (w <= 1.0f) return 0;
+    u = 0.5f + 0.5f * projected->x / w;
+    v = 0.5f - 0.5f * projected->y / w;
+    box[0] = u - half; box[1] = v - half; box[2] = u + half; box[3] = v + half;
+    return u > -0.2f && u < 1.2f && v > -0.2f && v < 1.2f;
+}
+
+static void Shot(PlayState* play, const char* tag, int alt) {
+    char hdd[200], usb[240], line[160], ptag[48];
     const Ps3TestCase* t = &kPs3TestList[sCur];
+    f32 box[4] = { 0, 0, 0, 0 };
+    int haveBox = 0;
     ++sShotNo;
     snprintf(hdd, sizeof(hdd), "%s/%02d_%s_%s%d.png", sRunDir, sRunPos + 1, t->slug, tag, sShotNo);
     usb[0] = '\0';
     if (sUsbRunDir[0]) snprintf(usb, sizeof(usb), "%s/%02d_%s_%s%d.png", sUsbRunDir, sRunPos + 1, t->slug, tag, sShotNo);
-    if (!oot_ps3_debug_request_shot(hdd, usb)) {
+    if (t->pixelTarget == PX_BOX) {
+        memcpy(box, t->box, sizeof(box));
+        haveBox = 1;
+    } else if (play != NULL && (t->pixelTarget == PX_ACTOR || t->pixelTarget == PX_LINK)) {
+        Actor* a = t->pixelTarget == PX_LINK ? &GET_PLAYER(play)->actor : FindActor(play, t->pixelActor);
+        if (a == NULL) Report("  pixel check: target actor %04X not in the room", (unsigned)(u16)t->pixelActor);
+        else if (!(haveBox = ScreenBox(&a->projectedPos, a->projectedW, t->box[0], box)))
+            Report("  pixel check: target is off screen / behind the camera (w=%.0f)", (double)a->projectedW);
+    }
+    snprintf(ptag, sizeof(ptag), "shot%d%s", sShotNo, alt ? " alt" : "");
+    if (!(haveBox ? oot_ps3_debug_request_shot_check(hdd, usb, ptag, box[0], box[1], box[2], box[3])
+                  : oot_ps3_debug_request_shot(hdd, usb))) {
         snprintf(line, sizeof(line), "trace: test shot %d skipped (previous one still being written)", sShotNo);
         oot_ps3_early_trace(line);
     }
@@ -416,12 +478,22 @@ static void Verdict(char* out, unsigned int size) {
         else if (sM.masks) snprintf(part, sizeof(part), "PASS: masked textures composed (%u); check the shots", sM.masks);
         else snprintf(part, sizeof(part), "CHECK: no masked texture drawn (boss never on screen?)");
         snprintf(out + strlen(out), size - strlen(out), "%s%s", out[0] ? " | " : "", part);
+        if (sM.px[0]) {
+            snprintf(part, sizeof(part), "screen: boss box up to %u%% black (%u shots)%s", sM.pxMaxBlack[0], sM.px[0],
+                     sM.pxMaxBlack[0] >= 70 ? " - MOSTLY BLACK" : "");
+            snprintf(out + strlen(out), size - strlen(out), " | %s", part);
+        }
     }
     if (t->probes & PR_FADE) {
         if (sM.fadeOther) snprintf(part, sizeof(part), "FAIL: non-gray fade colour seen %u times (e.g. %s)", sM.fadeOther, sM.fadeOtherExample);
         else if (sM.fadeGray) snprintf(part, sizeof(part), "PASS: every fade/fill colour gray (%u)", sM.fadeGray);
         else snprintf(part, sizeof(part), "NO DATA: no fade or fill was drawn");
         snprintf(out + strlen(out), size - strlen(out), "%s%s", out[0] ? " | " : "", part);
+        if (sM.px[0]) {
+            snprintf(part, sizeof(part), "screen: up to %u%% gray, up to %u%% reddish%s", sM.pxMaxGray[0], sM.pxMaxRed[0],
+                     sM.pxMaxRed[0] >= 10 ? " - REDDISH ON SCREEN" : "");
+            snprintf(out + strlen(out), size - strlen(out), " | %s", part);
+        }
     }
     if (t->probes & PR_WARP) {
         if (sM.warpDrawLines == 0) snprintf(part, sizeof(part), "EXPLAINED: the warp actor never drew (not spawned?)");
@@ -429,9 +501,18 @@ static void Verdict(char* out, unsigned int size) {
         else if (sM.watchRejected >= sM.watchTris) snprintf(part, sizeof(part), "EXPLAINED: all %u warp triangles clip-rejected (off screen / bad matrix)", sM.watchTris);
         else if (sM.watchCulled * 10U >= sM.watchTris * 9U) snprintf(part, sizeof(part), "EXPLAINED: %u of %u warp triangles back-face culled", sM.watchCulled, sM.watchTris);
         else if (sM.watchAlphaZero && sM.watchAlphaZero == sM.watchLines) snprintf(part, sizeof(part), "EXPLAINED: warp drawn with primitive alpha 0");
-        else snprintf(part, sizeof(part), "DRAWN: %u warp triangles reach the renderer (gpu %u, cpu %u, culled %u, w<0 %u); compare shots",
-                      sM.watchTris, sM.watchGpu, sM.watchCpu, sM.watchCulled, sM.watchWneg);
+        else snprintf(part, sizeof(part), "DRAWN: %u warp triangles (path: gpu %u, fast %u, gpu refused->cpu %u, cpu %u; culled %u)",
+                      sM.watchTris, sM.pathGpu, sM.pathFast, sM.pathRefused, sM.pathCpu, sM.watchCulled);
         snprintf(out + strlen(out), size - strlen(out), "%s%s", out[0] ? " | " : "", part);
+        if (sM.px[0] || sM.px[1]) {
+            /* cyan/blue share in the box around the warp: GPU path on (normal) vs off (alt) */
+            snprintf(part, sizeof(part), "screen: warp box cyan/blue up to %u%% with GPU path, up to %u%% without -> %s",
+                     sM.pxMaxCyanBlue[0], sM.pxMaxCyanBlue[1],
+                     sM.pxMaxCyanBlue[0] >= 8 ? "VISIBLE"
+                     : sM.pxMaxCyanBlue[1] >= 8 ? "INVISIBLE ONLY ON THE GPU PATH"
+                     : "NOT VISIBLE ON EITHER PATH (renderer state: see the probe lines)");
+            snprintf(out + strlen(out), size - strlen(out), " | %s", part);
+        }
     }
     if (t->probes & PR_FACE) {
         if (sM.faceLines == 0) snprintf(part, sizeof(part), "NO DATA: no face changes logged in the cutscene");
@@ -444,6 +525,11 @@ static void Verdict(char* out, unsigned int size) {
         else if (sM.watchTris > sM.watchRejected) snprintf(part, sizeof(part), "PASS: minimap drawn (%u triangles)", sM.watchTris);
         else snprintf(part, sizeof(part), "FAIL: minimap texture never drawn");
         snprintf(out + strlen(out), size - strlen(out), "%s%s", out[0] ? " | " : "", part);
+        if (sM.px[0]) {
+            snprintf(part, sizeof(part), "screen: minimap corner up to %u%% cyan/blue%s", sM.pxMaxCyanBlue[0],
+                     sM.pxMaxCyanBlue[0] >= 3 ? "" : " - NOTHING BLUE THERE");
+            snprintf(out + strlen(out), size - strlen(out), " | %s", part);
+        }
     }
     if (t->probes & PR_MEMORY) {
         const unsigned int size_kb = oot_ps3_heap_size_kb(), used = oot_ps3_heap_used_kb();
@@ -457,10 +543,14 @@ static void Verdict(char* out, unsigned int size) {
 }
 
 static void EndTest(const char* why) {
-    char line[260];
+    char line[480];
     const unsigned long long now = oot_ps3_microseconds_now();
     gOotPs3TestProbeFade = 0;
     oot_ps3_fast3d_watch_texture("");
+    if (sGpuWas >= 0) { /* a test that ended before ACT_GPU_RESTORE */
+        oot_ps3_tnl_set_requested(sGpuWas);
+        sGpuWas = -1;
+    }
     Verdict(sVerdicts[sRunPos], sizeof(sVerdicts[sRunPos]));
     if (sDroppedLines) Report("  ... %u more lines not copied (see the main log)", sDroppedLines);
     Report("end: %s after %.1f s, %d screenshots (%u ok, %u failed)", why, (double)(now - sTestT0) / 1000000.0, sShotNo,
@@ -665,7 +755,7 @@ static void TourTick(PlayState* play) {
         char tag[16];
         snprintf(tag, sizeof(tag), "area%02d_", sTourStep + 1);
         Report("  tour %d/%d: scene %d", sTourStep + 1, PS3_TOUR_STEPS, (int)play->sceneNum);
-        Shot(tag);
+        Shot(play, tag, 0);
         sTourShot = 1;
     }
     if (now - sTourT0 < 5000000ULL) return;
@@ -716,16 +806,31 @@ void Ps3Test_Tick(PlayState* play) {
             due = 1;
         }
         if (!due) break;
-        if ((s->action == ACT_SHOT || s->action == ACT_END) && oot_ps3_debug_shot_busy()) break; /* shot still writing */
+        if ((s->action == ACT_SHOT || s->action == ACT_SHOT_ALT || s->action == ACT_END) && oot_ps3_debug_shot_busy())
+            break; /* shot still writing */
         ++sStep;
         switch (s->action) {
             case ACT_SHOT: {
                 char tag[16];
                 snprintf(tag, sizeof(tag), "%s", s->when == AT_CS ? "cs" : "t");
                 Report("  step %d: screenshot at %s %u", sStep, s->when == AT_CS ? "cutscene frame" : "ms", s->at);
-                Shot(tag);
+                Shot(play, tag, 0);
                 break;
             }
+            case ACT_SHOT_ALT:
+                Report("  step %d: screenshot at ms %u (variant: GPU vertex path OFF)", sStep, s->at);
+                Shot(play, "gpuoff", 1);
+                break;
+            case ACT_GPU_OFF:
+                sGpuWas = oot_ps3_tnl_requested();
+                oot_ps3_tnl_set_requested(0);
+                Report("  action: GPU vertex path OFF for the next shots (was %s)", sGpuWas ? "ON" : "OFF");
+                break;
+            case ACT_GPU_RESTORE:
+                if (sGpuWas >= 0) oot_ps3_tnl_set_requested(sGpuWas);
+                Report("  action: GPU vertex path back to %s", sGpuWas ? "ON" : "OFF");
+                sGpuWas = -1;
+                break;
             case ACT_TELEPORT_WARP: TeleportToWarp(play); break;
             case ACT_PLACE_LINK: PlaceLink(play, t->place); break;
             case ACT_STATE: LogState(play, "step"); break;

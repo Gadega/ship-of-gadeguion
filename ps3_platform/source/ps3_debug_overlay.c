@@ -21,6 +21,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <zlib.h>
@@ -149,15 +150,74 @@ static unsigned int sPrevButtons, sHeldTicks;
 static int sMarkCount, sShotCount, sShotPending;
 /* Test runner screenshots (ps3_test_runner.c): taken on the render side at the end of
  * the next drawn frame. */
-static char sAutoShotHdd[160], sAutoShotUsb[200];
+static char sAutoShotHdd[160], sAutoShotUsb[200], sAutoShotTag[48];
+static float sAutoShotRect[4]; /* pixel check box, normalized 0..1 (x0, y0, x1, y1); x1 <= x0 = none */
 static volatile int sAutoShotPending;
 int oot_ps3_debug_request_shot(const char* hddPath, const char* usbPath) {
     if (sAutoShotPending) return 0;
     snprintf(sAutoShotHdd, sizeof(sAutoShotHdd), "%s", hddPath ? hddPath : "");
     snprintf(sAutoShotUsb, sizeof(sAutoShotUsb), "%s", usbPath ? usbPath : "");
+    sAutoShotRect[0] = sAutoShotRect[2] = 0.0f;
     __sync_synchronize();
     sAutoShotPending = 1;
     return 1;
+}
+/* Same, plus a colour count of the pixels in a box of the same frame (test verdicts). */
+int oot_ps3_debug_request_shot_check(const char* hddPath, const char* usbPath, const char* tag, float x0, float y0,
+                                     float x1, float y1) {
+    if (sAutoShotPending) return 0;
+    snprintf(sAutoShotHdd, sizeof(sAutoShotHdd), "%s", hddPath ? hddPath : "");
+    snprintf(sAutoShotUsb, sizeof(sAutoShotUsb), "%s", usbPath ? usbPath : "");
+    snprintf(sAutoShotTag, sizeof(sAutoShotTag), "%s", tag ? tag : "");
+    sAutoShotRect[0] = x0 < 0.0f ? 0.0f : x0;
+    sAutoShotRect[1] = y0 < 0.0f ? 0.0f : y0;
+    sAutoShotRect[2] = x1 > 1.0f ? 1.0f : x1;
+    sAutoShotRect[3] = y1 > 1.0f ? 1.0f : y1;
+    __sync_synchronize();
+    sAutoShotPending = 1;
+    return 1;
+}
+
+/* Colour count over a box of the frame (X8R8G8B8): average and the share of pixels
+ * that are black, blue, cyan, reddish, gray, white. */
+static void PixelCheck(const char* tag, const float* rect) {
+    uint32_t width = 0, height = 0;
+    const uint32_t* frame = oot_ps3_rsx_capture_frame(&width, &height);
+    char line[240];
+    uint32_t x0, y0, x1, y1, x, y, n = 0;
+    uint32_t black = 0, blue = 0, cyan = 0, red = 0, gray = 0, white = 0;
+    unsigned long long sr = 0, sg = 0, sb = 0;
+    if (frame == NULL || width == 0 || height == 0 || rect[2] <= rect[0] || rect[3] <= rect[1]) {
+        oot_ps3_early_trace("trace: test pixels FAILED (no frame or empty box)");
+        return;
+    }
+    x0 = (uint32_t)(rect[0] * (float)width); x1 = (uint32_t)(rect[2] * (float)width);
+    y0 = (uint32_t)(rect[1] * (float)height); y1 = (uint32_t)(rect[3] * (float)height);
+    if (x1 > width) x1 = width;
+    if (y1 > height) y1 = height;
+    for (y = y0; y < y1; y += 2) {
+        const uint32_t* row = frame + (size_t)y * width;
+        for (x = x0; x < x1; x += 2) {
+            const uint32_t p = row[x];
+            const int r = (int)((p >> 16) & 0xFF), g = (int)((p >> 8) & 0xFF), b = (int)(p & 0xFF);
+            ++n;
+            sr += (unsigned)r; sg += (unsigned)g; sb += (unsigned)b;
+            if (r < 24 && g < 24 && b < 24) ++black;
+            if (r > 200 && g > 200 && b > 200) ++white;
+            if (b > 90 && b > r + 50 && b > g + 20) ++blue;
+            if (g > 110 && b > 110 && r + 50 < g && r + 50 < b) ++cyan;
+            if (r > 90 && r > g + 35 && r > b + 35) ++red;
+            if (r > 50 && abs(r - g) < 14 && abs(g - b) < 14 && abs(r - b) < 14) ++gray;
+        }
+    }
+    if (n == 0) n = 1;
+    snprintf(line, sizeof(line),
+             "trace: test pixels %s box=(%.2f,%.2f)-(%.2f,%.2f) avg=%u,%u,%u black=%u%% blue=%u%% cyan=%u%% red=%u%% "
+             "gray=%u%% white=%u%%",
+             tag, (double)rect[0], (double)rect[1], (double)rect[2], (double)rect[3], (unsigned)(sr / n),
+             (unsigned)(sg / n), (unsigned)(sb / n), black * 100U / n, blue * 100U / n, cyan * 100U / n, red * 100U / n,
+             gray * 100U / n, white * 100U / n);
+    oot_ps3_early_trace(line);
 }
 int oot_ps3_debug_shot_busy(void) { return sAutoShotPending; }
 static char sStatus[PANEL_COLS + 1];
@@ -648,6 +708,7 @@ void oot_ps3_debug_overlay_frame(unsigned int screenWidth, unsigned int screenHe
     if (sAutoShotPending) {
         char line[240];
         const int result = WriteScreenshotFiles(sAutoShotHdd, sAutoShotUsb);
+        if (sAutoShotRect[2] > sAutoShotRect[0]) PixelCheck(sAutoShotTag, sAutoShotRect);
         snprintf(line, sizeof(line), "trace: test shot %s: %s", sAutoShotHdd,
                  result == 2 ? "saved (USRDIR + USB)" : result == 1 ? "saved (USRDIR)" : result == 0 ? "FAILED (no frame)"
                                                                                      : "FAILED (cannot write)");
