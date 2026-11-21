@@ -111,9 +111,9 @@ static const Ps3TestCase kPs3TestList[] = {
       { { AT_CS, 60, ACT_SHOT }, { AT_CS, 150, ACT_SHOT }, { AT_CS, 260, ACT_SHOT }, { AT_CS, 400, ACT_SHOT },
         { AT_CS, 560, ACT_SHOT }, { AT_CS, 600, ACT_END }, { AT_MS, 45000, ACT_END } } },
     { "#12 Minimap in Dodongo's Cavern", "minimap",
-      "The blue minimap (bottom right) must be visible.",
+      "Dungeon map given: the blue minimap (bottom right) must be visible.",
       ENTR_DODONGOS_CAVERN_ENTRANCE, 0, LINK_AGE_CHILD, TS_DUNGEON_KID, -1, PR_MINIMAP, "MinimapTex",
-      { { AT_MS, 3000, ACT_SHOT }, { AT_MS, 6000, ACT_SHOT }, { AT_MS, 7000, ACT_END } } },
+      { { AT_MS, 4000, ACT_SHOT }, { AT_MS, 9000, ACT_SHOT }, { AT_MS, 12000, ACT_END } } },
     { "#12/#13 Memory tour: 25 areas, then the minimap", "tour",
       "Visits many areas (~5 s each) like a long session. Watch for missing textures.",
       ENTR_KOKIRI_FOREST_0, 0, LINK_AGE_CHILD, TS_TOUR, -1, PR_MEMORY | PR_MINIMAP, "MinimapTex",
@@ -542,6 +542,10 @@ void Ps3Test_BeforeLoad(int index) {
     if (setup == TS_GOHMA_WARP) gSaveContext.sceneFlags[SCENE_DEKU_TREE_BOSS].clear |= 1U << 1;
     if (setup == TS_GOHMA_FIGHT) gSaveContext.sceneFlags[SCENE_DEKU_TREE_BOSS].clear &= ~(1U << 1);
     if (setup == TS_DODONGO_FIGHT) gSaveContext.sceneFlags[SCENE_DODONGOS_CAVERN_BOSS].clear &= ~(1U << 1);
+    /* z_map_exp.c Minimap_Draw: in dungeons the minimap is only drawn with that dungeon's
+     * Map (test run 2: a fresh file has none, so "never drawn" was correct behaviour). */
+    if (setup == TS_DUNGEON_KID || setup == TS_TOUR)
+        gSaveContext.inventory.dungeonItems[SCENE_DODONGOS_CAVERN] |= gBitFlags[DUNGEON_MAP];
     sCurScene = gEntranceTable[kPs3TestList[index].entrance].scene;
 }
 void Ps3Test_AfterTransition(int index) {
@@ -672,6 +676,14 @@ static void TourTick(PlayState* play) {
     ++sTourStep;
     sTourShot = 0;
     sTourT0 = now;
+    if (sTourStep + 1 == PS3_TOUR_STEPS) {
+        /* last area (Dodongo's Cavern, map given): count only its minimap */
+        Lock();
+        sM.watchLines = sM.watchTris = sM.watchGpu = sM.watchCpu = sM.watchRejected = sM.watchCulled = sM.watchWneg = 0;
+        Unlock();
+        oot_ps3_fast3d_watch_texture(kPs3TestList[sCur].watchTexture);
+        Report("  tour: last area - the minimap count starts again here (dungeon map given)");
+    }
     snprintf(name, sizeof(name), "tour step %d", sTourStep + 1);
     oot_ps3_debug_queue_warp_to(kPs3TourList[sTourStep], name);
 }
@@ -704,7 +716,7 @@ void Ps3Test_Tick(PlayState* play) {
             due = 1;
         }
         if (!due) break;
-        if (s->action == ACT_SHOT && oot_ps3_debug_shot_busy()) break; /* previous shot still writing */
+        if ((s->action == ACT_SHOT || s->action == ACT_END) && oot_ps3_debug_shot_busy()) break; /* shot still writing */
         ++sStep;
         switch (s->action) {
             case ACT_SHOT: {

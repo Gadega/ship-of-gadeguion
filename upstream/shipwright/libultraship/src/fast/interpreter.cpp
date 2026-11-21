@@ -2557,6 +2557,11 @@ static const void* sPs3WatchRes[2];
 static bool sPs3WatchMatch[2];
 static unsigned long long sPs3WatchT0;
 static struct { unsigned tris, gpu, cpu, rejected, culled, wneg, rects; } sPs3W;
+// Distinct render states among the watched triangles of the current second (run 2: the
+// one sample per second was the heart container drawn after the warp).
+struct Ps3WatchState { uint64_t combine; uint32_t prim, env, omL, geo; unsigned count; };
+static Ps3WatchState sPs3WS[6];
+static unsigned sPs3WSCount, sPs3WSOther;
 extern "C" void oot_ps3_fast3d_watch_texture(const char* text) {
     snprintf(sPs3WatchName, sizeof(sPs3WatchName), "%s", text ? text : "");
     ++sPs3WatchSeq;
@@ -2591,7 +2596,10 @@ static void Ps3WatchTri(Interpreter* g, uint8_t i1, uint8_t i2, uint8_t i3, bool
     if (sPs3WatchName[0] == '\0') return;
     const char* hit = nullptr;
     for (int t = 0; t < 2; ++t) {
-        const auto& res = g->mRdp->loaded_texture[t].raw_tex_metadata.resource;
+        // the texture this triangle samples for texel t: tile -> TMEM slot, as GfxSpTri1
+        uint32_t tile = g->mRdp->first_tile_index + t;
+        if (t == 1 && g->mRdp->first_tile_index >= 2) tile = g->mRdp->first_tile_index;
+        const auto& res = g->mRdp->loaded_texture[g->mRdp->texture_tile[tile & 7].tmem_index & 1].raw_tex_metadata.resource;
         const void* key = res.get();
         if (key != sPs3WatchRes[t]) {
             sPs3WatchRes[t] = key;
@@ -2615,6 +2623,20 @@ static void Ps3WatchTri(Interpreter* g, uint8_t i1, uint8_t i2, uint8_t i3, bool
     if (v1->clip_rej & v2->clip_rej & v3->clip_rej) ++sPs3W.rejected;
     else if (Ps3CpuRejectOrCull(g, v1, v2, v3)) ++sPs3W.culled;
     if (v1->w < 0 || v2->w < 0 || v3->w < 0) ++sPs3W.wneg;
+    {
+        const RDP* r = g->mRdp;
+        const uint32_t prim = ((uint32_t)r->prim_color.r << 24) | ((uint32_t)r->prim_color.g << 16) |
+                              ((uint32_t)r->prim_color.b << 8) | r->prim_color.a;
+        const uint32_t env = ((uint32_t)r->env_color.r << 24) | ((uint32_t)r->env_color.g << 16) |
+                             ((uint32_t)r->env_color.b << 8) | r->env_color.a;
+        unsigned k = 0;
+        for (; k < sPs3WSCount; ++k)
+            if (sPs3WS[k].combine == r->combine_mode && sPs3WS[k].prim == prim && sPs3WS[k].env == env &&
+                sPs3WS[k].omL == r->other_mode_l && sPs3WS[k].geo == g->mRsp->geometry_mode) break;
+        if (k < sPs3WSCount) ++sPs3WS[k].count;
+        else if (sPs3WSCount < 6) sPs3WS[sPs3WSCount++] = { r->combine_mode, prim, env, r->other_mode_l, g->mRsp->geometry_mode, 1 };
+        else ++sPs3WSOther;
+    }
     const unsigned long long now = oot_ps3_microseconds_now();
     if (now - sPs3WatchT0 < 1000000ULL || sPs3WatchLines >= 90) return;
     sPs3WatchT0 = now;
@@ -2632,6 +2654,16 @@ static void Ps3WatchTri(Interpreter* g, uint8_t i1, uint8_t i2, uint8_t i3, bool
              (unsigned)g->mRenderingState.depth_test_and_mask, (double)v1->x, (double)v1->y, (double)v1->z,
              (double)v1->w, (unsigned)v1->color.a);
     oot_ps3_early_trace(line);
+    for (unsigned k = 0; k < sPs3WSCount; ++k) {
+        snprintf(line, sizeof(line),
+                 "trace: test-probe tex state %u/%u: x%u combine=%016llx prim=%u,%u,%u,%u env=%u,%u,%u,%u omL=%08x geo=%08x%s",
+                 k + 1, sPs3WSCount, sPs3WS[k].count, (unsigned long long)sPs3WS[k].combine, sPs3WS[k].prim >> 24,
+                 (sPs3WS[k].prim >> 16) & 0xFF, (sPs3WS[k].prim >> 8) & 0xFF, sPs3WS[k].prim & 0xFF, sPs3WS[k].env >> 24,
+                 (sPs3WS[k].env >> 16) & 0xFF, (sPs3WS[k].env >> 8) & 0xFF, sPs3WS[k].env & 0xFF, (unsigned)sPs3WS[k].omL,
+                 (unsigned)sPs3WS[k].geo, k + 1 == sPs3WSCount && sPs3WSOther ? " (+more states)" : "");
+        oot_ps3_early_trace(line);
+    }
+    sPs3WSCount = sPs3WSOther = 0;
     memset(&sPs3W, 0, sizeof(sPs3W));
 }
 #endif
