@@ -200,7 +200,7 @@ static unsigned int ParseU(const char* text, const char* key) {
 
 static int WantLine(const char* m) {
     static const char* const kAlways[] = {
-        "trace: test", "graph: Play mask texture composite", "fast3d-rsx: mask composite upload failed",
+        "trace: test", "trace: debug menu", "graph: Play mask texture composite", "fast3d-rsx: mask composite upload failed",
         "graph: Play warp draw", "graph: Play link face", "graph: Play memory", "fast3d texture ids exhausted",
         "graph: Play state", "rsx-watchdog", "trace: resource missing", "graph: Play heap-guard",
     };
@@ -408,7 +408,7 @@ static void Verdict(char* out, unsigned int size) {
     char part[200];
     out[0] = '\0';
     if (!sArrived) {
-        snprintf(out, size, "TIMEOUT: the area never loaded");
+        snprintf(out, size, "TIMEOUT: the area never loaded (see the 'debug menu request' lines above)");
         return;
     }
     if (t->probes & PR_MASKS) {

@@ -2561,6 +2561,24 @@ extern "C" void oot_ps3_fast3d_watch_texture(const char* text) {
     snprintf(sPs3WatchName, sizeof(sPs3WatchName), "%s", text ? text : "");
     ++sPs3WatchSeq;
 }
+// Does the current combiner read texel t (0/1)? The texture stays loaded after the
+// draw that used it, so without this every later untextured draw (HUD rectangles,
+// fills) counted as "watched" (first test run: ~100k bogus triangles a second).
+static bool Ps3CombinerUsesTexel(const RDP* r, int t) {
+    const uint32_t tex = (uint32_t)t + 1U; // G_CCMUX_TEXEL0 = 1, TEXEL1 = 2 (same for alpha)
+    const uint32_t texAlpha = (uint32_t)t + 8U; // G_CCMUX_TEXEL0_ALPHA / TEXEL1_ALPHA (rgb c only)
+    const bool twoCycle = (r->other_mode_h & (3U << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE;
+    for (int cycle = 0; cycle < (twoCycle ? 2 : 1); ++cycle) {
+        const uint32_t rgb = (uint32_t)(r->combine_mode >> (cycle ? 28 : 0)) & 0xFFFFU;
+        const uint32_t alpha = (uint32_t)(r->combine_mode >> (cycle ? 44 : 16)) & 0xFFFU;
+        const uint32_t ra = rgb & 0xF, rb = (rgb >> 4) & 0xF, rc = (rgb >> 8) & 0x1F, rd = (rgb >> 13) & 7;
+        const uint32_t aa = alpha & 7, ab = (alpha >> 3) & 7, ac = (alpha >> 6) & 7, ad = (alpha >> 9) & 7;
+        if (ra == tex || rb == tex || rc == tex || rc == texAlpha || rd == tex) return true;
+        if (aa == tex || ab == tex || ac == tex || ad == tex) return true;
+    }
+    return false;
+}
+
 static void Ps3WatchTri(Interpreter* g, uint8_t i1, uint8_t i2, uint8_t i3, bool gpu, bool isRect) {
     if (sPs3WatchSeen != sPs3WatchSeq) {
         sPs3WatchSeen = sPs3WatchSeq;
@@ -2580,7 +2598,7 @@ static void Ps3WatchTri(Interpreter* g, uint8_t i1, uint8_t i2, uint8_t i3, bool
             sPs3WatchMatch[t] = key != nullptr && res->GetInitData() != nullptr &&
                                 res->GetInitData()->Path.find(sPs3WatchName) != std::string::npos;
         }
-        if (sPs3WatchMatch[t]) hit = res->GetInitData()->Path.c_str();
+        if (sPs3WatchMatch[t] && Ps3CombinerUsesTexel(g->mRdp, t)) hit = res->GetInitData()->Path.c_str();
     }
     if (hit == nullptr) return;
     LoadedVertex* v1 = &g->mRsp->loaded_vertices[i1];

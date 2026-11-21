@@ -250,6 +250,15 @@ static void Ps3ApplyRequest(PlayState* play) {
     /* Wait (up to ~10 s) for a running transition or the pause menu to finish. */
     if (play->transitionTrigger != TRANS_TRIGGER_OFF || play->transitionMode != TRANS_MODE_OFF ||
         play->pauseCtx.state != 0 || play->pauseCtx.debugState != 0) {
+        /* A delayed fade (the gray screen before the Deku Tree speaks) waits in
+         * TRANS_MODE_INSTANCE_WAIT until its cutscene releases it, and that cutscene can
+         * sit on a text box nobody answers: release it the way the cutscene would, so
+         * the fade finishes and the warp can go (test run 2026-11-21: the next test was
+         * dropped). */
+        if (play->transitionMode == TRANS_MODE_INSTANCE_WAIT && sPs3RequestFrames == 10) {
+            gSaveContext.cutsceneTransitionControl = 1;
+            oot_ps3_early_trace("trace: debug menu request: released a delayed fade that was waiting for its cutscene");
+        }
         if (++sPs3RequestFrames > 200) {
             snprintf(line, sizeof(line), "trace: debug menu request dropped (transition=%d/%d pause=%d)",
                      (int)play->transitionTrigger, (int)play->transitionMode, (int)play->pauseCtx.state);
